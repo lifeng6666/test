@@ -40,6 +40,31 @@ def desensitize_password(pwd):
         return pwd
     return pwd[:3] + '*****'
 
+def ensure_proxy_whitelist():
+    """预检代理IP白名单状态，避免首次获取代理时阻塞导致 authCode 失效"""
+    log("正在预检代理IP白名单状态...")
+    proxy_api_url = "http://api.dmdaili.com/dmgetip.asp?apikey=b345ad7e&pwd=bca1fcb138fb91448d9cfe7f1099c6f6&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
+    
+    for _ in range(3):
+        try:
+            response = requests.get(proxy_api_url, timeout=10)
+            data = response.json()
+            if data.get("code") == 605:
+                log("代理IP已自动添加到白名单，等待15秒生效...")
+                time.sleep(15)
+                log("✅ 代理IP白名单生效完毕。")
+                return
+            elif data.get("code") == 0:
+                log("✅ 代理IP白名单已在生效状态。")
+                return
+            elif data.get("code") == 1 and "Too Many Requests" in data.get("msg", ""):
+                time.sleep(5)
+            else:
+                break
+        except Exception as e:
+            log(f"⚠ 预检代理白名单异常: {e}")
+            break
+
 def with_retry(func, max_retries=5, delay=1):
     """如果函数返回None或抛出异常，静默重试"""
     def wrapper(*args, **kwargs):
@@ -213,76 +238,82 @@ class JLCClient:
         self.final_jindou = 0    # 签到后金豆数量
         self.jindou_reward = 0   # 本次获得金豆（通过差值计算）
         self.sign_status = "未知"  # 签到状态
-        self.has_weekly_reward = False  # 是否领取了普通周奖
-        self.has_special_reward = False # 是否领取了特殊的阻塞奖励
+        self.has_weekly_reward = False  # 是否领取了普通7天奖励 (有周奖)
+        self.has_special_reward = False # 是否领取了特殊节点奖励 (有奖励)
         self.have_receive = True # 默认True，如果在接口中探测到未领取的奖励会置为False
         
-    def send_request(self, url, method='GET', use_proxy=False):
+    def send_request(self, url, method='GET', use_proxy=True):
         """发送 API 请求"""
         global disable_global_proxy, consecutive_proxy_fails
         
-        # 如果要求使用代理，但实际上还没有代理，则获取一个
-        if use_proxy and not disable_global_proxy and not self.proxies:
-            self.proxies = get_valid_proxy(self.account_index)
-            
-        # 真正使用代理的条件：要求使用、没被禁用，且成功获取到了代理
-        is_actually_using_proxy = use_proxy and not disable_global_proxy and self.proxies is not None
-        
-        max_retries = 20 if is_actually_using_proxy else 1
-        
-        for attempt in range(max_retries):
-            try:
-                # 重新判定，因为过程中可能 disable_global_proxy 被修改
-                req_proxies = self.proxies if use_proxy and not disable_global_proxy else None
-                
-                if method.upper() == 'GET':
-                    response = requests.get(url, headers=self.headers, timeout=10, proxies=req_proxies)
-                else:
-                    response = requests.post(url, headers=self.headers, timeout=10, proxies=req_proxies)
-                
-                if response.status_code == 200:
-                    if req_proxies:
-                        consecutive_proxy_fails = 0
-                    return response.json()
-                else:
-                    log(f"账号 {self.account_index} - ❌ 请求失败，状态码: {response.status_code}")
-                    return None
-            except requests.exceptions.RequestException as e:
-                if use_proxy and not disable_global_proxy and self.proxies:
-                    if isinstance(e, requests.exceptions.ProxyError):
-                        error_type = "代理拒绝连接/代理错误"
-                    elif isinstance(e, requests.exceptions.ConnectTimeout):
-                        error_type = "连接代理超时"
-                    elif isinstance(e, requests.exceptions.ReadTimeout):
-                        error_type = "代理响应超时"
-                    elif isinstance(e, requests.exceptions.Timeout):
-                        error_type = "请求超时"
-                    elif isinstance(e, requests.exceptions.ConnectionError):
-                        error_type = "连接错误"
-                    else:
-                        error_type = "未知请求异常"
-                        
-                    log(f"账号 {self.account_index} - ⚠ 代理无效 ({error_type}: {e})，准备重新获取代理...")
-                    
+        if use_proxy and not disable_global_proxy:
+            max_proxy_retries = 20
+            for attempt in range(max_proxy_retries):
+                if not self.proxies:
                     self.proxies = get_valid_proxy(self.account_index)
-                    if not self.proxies:
-                        break
-                else:
-                    log(f"账号 {self.account_index} - ❌ 请求异常 ({url}): {e}")
+                    
+                if not self.proxies:
+                    log(f"账号 {self.account_index} - ❌ 代理获取失败，放弃本次请求。")
+                    # get_valid_proxy 内部已经处理了获取失败时 consecutive_proxy_fails += 1
                     return None
-        
-        if is_actually_using_proxy and self.proxies and use_proxy and not disable_global_proxy:
-            log(f"账号 {self.account_index} - ❌ 连续 {max_retries} 次代理请求失败")
+                
+                try:
+                    if method.upper() == 'GET':
+                        response = requests.get(url, headers=self.headers, timeout=10, proxies=self.proxies)
+                    else:
+                        response = requests.post(url, headers=self.headers, timeout=10, proxies=self.proxies)
+                    
+                    if response.status_code == 200:
+                        consecutive_proxy_fails = 0
+                        return response.json()
+                    else:
+                        log(f"账号 {self.account_index} - ❌ 请求失败，状态码: {response.status_code}")
+                        return None
+                        
+                except requests.exceptions.ProxyError as e:
+                    log(f"账号 {self.account_index} - ⚠ 代理无效 (代理错误/拒绝连接): {e}，准备重新获取...")
+                    self.proxies = None
+                except requests.exceptions.ConnectTimeout as e:
+                    log(f"账号 {self.account_index} - ⚠ 代理无效 (连接超时): {e}，准备重新获取...")
+                    self.proxies = None
+                except requests.exceptions.ReadTimeout as e:
+                    log(f"账号 {self.account_index} - ⚠ 代理无效 (响应超时): {e}，准备重新获取...")
+                    self.proxies = None
+                except requests.exceptions.ConnectionError as e:
+                    log(f"账号 {self.account_index} - ⚠ 代理无效 (连接异常): {e}，准备重新获取...")
+                    self.proxies = None
+                except requests.exceptions.RequestException as e:
+                    log(f"账号 {self.account_index} - ⚠ 代理无效 (请求异常): {e}，准备重新获取...")
+                    self.proxies = None
+                except Exception as e:
+                    log(f"账号 {self.account_index} - ⚠ 请求出现未知异常 ({url}): {e}，准备重新获取...")
+                    self.proxies = None
+            
+            log(f"账号 {self.account_index} - ❌ 连续 {max_proxy_retries} 次代理请求均失败。")
             consecutive_proxy_fails += 1
             if consecutive_proxy_fails >= 5:
                 disable_global_proxy = True
                 log("⚠ 连续5次代理获取/使用失败，接下来的账号全部放弃使用代理！")
+            return None
+        else:
+            try:
+                if method.upper() == 'GET':
+                    response = requests.get(url, headers=self.headers, timeout=10)
+                else:
+                    response = requests.post(url, headers=self.headers, timeout=10)
                 
-        return None
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    log(f"账号 {self.account_index} - ❌ 请求失败，状态码: {response.status_code}")
+                    return None
+            except Exception as e:
+                log(f"账号 {self.account_index} - ❌ 请求异常 ({url}): {e}")
+                return None
     
     def get_user_info(self):
         """获取用户信息"""
-        log(f"账号 {self.account_index} - 获取用户信息...")
+        log(f"账号 {self.account_index} - 获取用户信息 (使用代理)...")
         url = f"{self.base_url}/api/appPlatform/center/setting/selectPersonalInfo"
         
         max_retries = 5
@@ -317,6 +348,7 @@ class JLCClient:
     
     def get_points(self):
         """获取金豆数量"""
+        log(f"账号 {self.account_index} - 获取金豆数量 (使用代理)...")
         url = f"{self.base_url}/api/activity/front/getCustomerIntegral"
         max_retries = 5
         for attempt in range(max_retries):
@@ -348,7 +380,7 @@ class JLCClient:
     
     def check_sign_status(self):
         """检查签到状态"""
-        log(f"账号 {self.account_index} - 检查签到状态...")
+        log(f"账号 {self.account_index} - 检查签到状态 (使用代理)...")
         url = f"{self.base_url}/api/activity/sign/getCurrentUserSignInConfig"
         
         max_retries = 5
@@ -487,7 +519,7 @@ class JLCClient:
             return False
     
     def receive_voucher(self):
-        """领取周奖"""
+        """领取普通周奖"""
         log(f"账号 {self.account_index} - 领取周奖 (使用代理)...")
         url = f"{self.base_url}/api/activity/sign/receiveVoucher"
         # ⚠️ 签到及领取奖励接口显式使用代理
@@ -512,7 +544,7 @@ class JLCClient:
                 reward_text += "（有奖励）"
             log(f"账号 {self.account_index} - 🎉 总金豆增加: {self.initial_jindou} → {self.final_jindou}{reward_text}")
         elif self.jindou_reward == 0:
-            log(f"账号 {self.account_index} - ⚠ 总金豆无变化，可能今天已签到过: {self.initial_jindou} → {self.final_jindou} (0)")
+            log(f"账号 {self.account_index} - ⚠ 总金豆无变化，可能今天已签到过或停签防风控: {self.initial_jindou} → {self.final_jindou} (0)")
         else:
             log(f"账号 {self.account_index} - ❗ 金豆减少: {self.initial_jindou} → {self.final_jindou} ({self.jindou_reward})")
         
@@ -534,6 +566,13 @@ class JLCClient:
         
         # 将 final_jindou 先设为 initial_jindou，防止中途失败时 final_jindou 为 0
         self.final_jindou = self.initial_jindou
+        
+        # # 🎲 1%概率随机不签到防风控
+        # if random.random() < 0.01:
+        #     log(f"账号 {self.account_index} - 🎲 触发1%概率随机防风控，本次直接跳过签到操作")
+        #     self.sign_status = "停签一次防风控"
+        #     self.calculate_jindou_difference()
+        #     return True
         
         time.sleep(random.randint(1, 2))
         
@@ -715,39 +754,11 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
     
     # 显式创建临时目录用于 user-data-dir，以便后续清理
     user_data_dir = tempfile.mkdtemp()
-
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-software-rasterizer") # 禁用软件光栅化
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图像加载
-    chrome_options.add_experimental_option("excludeSwitches",["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
-
-    # 替换 DesiredCapabilities 提高兼容性
-    chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-    
     driver = None
     
     backup_passwords = []
 
     try:
-        # 尝试初始化 Driver
-        try:
-            driver = webdriver.Chrome(options=chrome_options)
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            wait = WebDriverWait(driver, 25)
-        except Exception as e:
-            log(f"账号 {account_index} - ❌ 浏览器初始化失败: {e}")
-            result['jindou_status'] = '浏览器启动失败'
-            # 返回当前结果，外层逻辑会根据重试机制处理
-            return result
-
         # 1. 获取 authCode（用于 JLC 登录）
         log(f"账号 {account_index} - 正在调用 登录(AliV3) 依赖进行登录...")
         
@@ -854,8 +865,75 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             result['jindou_success'] = False
         else:
             log(f"账号 {account_index} - 开始金豆签到流程...")
-            driver.get("https://m.jlc.com/")
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            
+            global disable_global_proxy, consecutive_proxy_fails
+            current_proxies = None
+            browser_success = False
+            max_browser_retries = 5  # 本地网络启动，不需要太多重试
+            
+            # 浏览器初始化及加载的内部重试机制
+            for browser_attempt in range(max_browser_retries):
+                # 每次重试重新配置 Chrome Options
+                chrome_options = Options()
+                
+                # 优化策略：设为 eager，只要 DOM 加载完就不再等第三方图片和脚本
+                chrome_options.page_load_strategy = 'eager'
+                
+                chrome_options.add_argument("--headless=new")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--disable-software-rasterizer") # 禁用软件光栅化
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图像加载
+                chrome_options.add_argument("--ignore-certificate-errors")
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
+                chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+                
+                log(f"账号 {account_index} - 正在启动浏览器 (尝试 {browser_attempt + 1}/{max_browser_retries})...")
+                current_proxies = None
+                
+                try:
+                    driver = webdriver.Chrome(options=chrome_options)
+                    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                    
+                    driver.set_page_load_timeout(15)
+                    
+                    driver.get("https://m.jlc.com/")
+                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    
+                    browser_success = True
+                    break
+                    
+                except Exception as e:
+                    # 发生异常立即关闭失效的 Driver
+                    if driver:
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        driver = None
+                        
+                    error_str = str(e).replace('\n', ' ')[:100]
+                    log(f"账号 {account_index} - ❌ 浏览器加载页面失败: {error_str} (尝试 {browser_attempt + 1}/{max_browser_retries})")
+                    
+                    # 清理旧的 user_data_dir 防止下一次启动被锁定抛出异常
+                    if user_data_dir and os.path.exists(user_data_dir):
+                        try:
+                            shutil.rmtree(user_data_dir, ignore_errors=True)
+                            user_data_dir = tempfile.mkdtemp()
+                        except Exception:
+                            pass
+                            
+                    time.sleep(2)
+            
+            if not browser_success:
+                log(f"账号 {account_index} - ❌ 连续 {max_browser_retries} 次尝试启动浏览器并加载页面均失败，进入外层兜底重试。")
+                result['jindou_status'] = '页面加载多次超时'
+                return result
             
             # 使用已获取的 authCode 进行 JLC 登录
             log(f"账号 {account_index} - 正在使用 authCode 登录 m.jlc.com...")
@@ -910,12 +988,6 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                 
                 if access_token and secretkey:
                     log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
-                    
-                    global disable_global_proxy
-                    current_proxies = None
-                    
-                    if disable_global_proxy:
-                        log(f"账号 {account_index} - ⚠ 已全局禁用代理，直接使用本地IP")
                     
                     jlc_client = JLCClient(access_token, secretkey, account_index, driver, current_proxies)
                     jindou_success = jlc_client.execute_full_process()
@@ -1287,6 +1359,11 @@ def main():
         sys.exit(1)
     
     total_accounts = len(usernames)
+    
+    # --- 前置预检代理白名单 ---
+    ensure_proxy_whitelist()
+    # -----------------------
+
     log(f"开始处理 {total_accounts} 个账号的签到任务")
     
     # 存储所有账号的结果
@@ -1298,7 +1375,7 @@ def main():
         all_results.append(result)
         
         if i < total_accounts:
-            wait_time = random.randint(3, 5)
+            wait_time = random.randint(5, 10)  # 签到之间随机延迟5-10秒
             log(f"等待 {wait_time} 秒后处理下一个账号...")
             time.sleep(wait_time)
     
@@ -1336,7 +1413,7 @@ def main():
         
         # 密码错误账号的特殊显示
         if password_error:
-            log(f"账号 {account_index} 详细结果:[密码错误]")
+            log(f"账号 {account_index} 详细结果: [密码错误]")
             log("  └── 状态: ❌ 账号或密码错误，跳过此账号")
         else:
             log(f"账号 {account_index} 详细结果:{retry_label}")

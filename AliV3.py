@@ -14,6 +14,54 @@ import requests
 
 subprocess.Popen = partial(subprocess.Popen, encoding='utf-8', errors='ignore')
 
+proxy = None
+
+def get_valid_proxy():
+    """获取一个代理IP"""
+    proxy_api_url = "http://api.dmdaili.com/dmgetip.asp?apikey=b345ad7e&pwd=bca1fcb138fb91448d9cfe7f1099c6f6&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
+    max_attempts = 100
+    attempt = 0
+    
+    while attempt < max_attempts:
+        try:
+            response = requests.get(proxy_api_url, timeout=10)
+            
+            try:
+                data = response.json()
+            except Exception:
+                attempt += 1
+                time.sleep(2)
+                continue
+
+            if data.get("code") == 605:
+                time.sleep(15)
+                attempt += 1
+                continue 
+            elif data.get("code") == 1 and "Too Many Requests" in data.get("msg", ""):
+                time.sleep(5)
+                attempt += 1
+                continue
+            elif data.get("code") == 0 and data.get("data"):
+                proxy_info = data["data"][0]
+                ip = proxy_info.get("ip")
+                port = proxy_info.get("port")
+                if ip and port:
+                    proxy_url = f"http://{ip}:{port}"
+                    proxies = {
+                        "http": proxy_url,
+                        "https": proxy_url
+                    }
+                    return proxies
+            
+            attempt += 1
+            time.sleep(2)
+        except Exception as e:
+            attempt += 1
+            time.sleep(2)
+    
+    return None
+
+
 class AliV3:
     def __init__(self):
         self.captchaTicket = None
@@ -53,46 +101,43 @@ class AliV3:
 
     def _setup_browser(self):
         """配置并启动 DrissionPage"""
-        chrome_options = ChromiumOptions()
-    
-        # 核心修复点：随机分配端口，隔离上下文，避免与主程序的 DrissionPage 实例冲突
-        chrome_options.auto_port()
-
-        chrome_options.set_argument('--headless=new')  # 无头模式
-        chrome_options.set_argument('--no-sandbox')    # 禁用沙箱模式
-        chrome_options.set_argument('--window-size=415,900') # 页面大小设置为415*900
+        co = ChromiumOptions()
+        co.set_argument('--headless=new')  # 无头模式
+        co.set_argument('--no-sandbox')
+        co.set_argument('--window-size=415,900') # 页面大小设置为415*900
         
         # 防检测参数
-        chrome_options.set_argument('--disable-blink-features=AutomationControlled')     # 禁用 Blink 功能
-        chrome_options.set_pref('credentials_enable_service', False)     # 禁用凭证服务
-
-        chrome_options.set_argument('--disable-gpu')     # 禁用 GPU 加速
-        chrome_options.set_argument('--disable-dev-shm-usage')     # 禁用设备共享内存使用
-        chrome_options.set_argument('--disable-extensions')     # 禁用扩展
-        chrome_options.set_argument('--disable-logging')     # 禁用日志记录
-        chrome_options.set_argument('--disable-background-networking')     # 禁用后台网络活动
-        chrome_options.set_argument('--disable-default-apps')     # 禁用默认应用
-        chrome_options.set_argument('--disable-sync')     # 禁用同步服务
-        chrome_options.set_argument('--disable-translate')     # 禁用翻译服务
-        chrome_options.set_argument('--no-first-run')     # 禁用首次运行
-        chrome_options.set_argument('--safebrowsing-disable-auto-update')     # 禁用安全浏览自动更新
-        chrome_options.set_argument('--ignore-certificate-errors')     # 忽略证书错误
-        chrome_options.set_argument('--ignore-ssl-errors')     # 忽略 SSL 错误
-        chrome_options.set_argument('--disable-web-security')     # 禁用 Web 安全
-        chrome_options.set_argument('--allow-running-insecure-content')     # 允许运行不安全内容
-        chrome_options.set_argument('--disable-features=IsolateOrigins,site-per-process')     # 禁用 IsolateOrigins 功能
-        chrome_options.set_argument('--disable-site-isolation-trials')     # 禁用站点隔离试验
-        chrome_options.set_argument('--single-process')     # 单进程模式
-        chrome_options.set_argument('--disable-setuid-sandbox')     # 禁用 Setuid 沙箱
-        chrome_options.set_argument('--disable-hang-monitor')     # 禁用挂起监控
-        chrome_options.set_argument('--disable-popup-blocking')     # 禁用弹出窗口阻塞
-        chrome_options.set_argument('--disable-prompt-on-repost')     # 禁用重新提交提示
-        chrome_options.set_argument('--disable-backgrounding-occluded-windows')     # 禁用遮挡窗口后台运行
-        chrome_options.set_argument('--disable-renderer-backgrounding')     # 禁用渲染器后台运行
-        chrome_options.set_argument('--disable-ipc-flooding-protection')     # 禁用 IPC 洪水保护
-        chrome_options.set_argument('--memory-pressure-off')     # 禁用内存压力保护
-        chrome_options.set_argument('--js-flags=--max-old-space-size=512')     # 设置最大旧空间大小为 512MB
-        chrome_options.set_timeouts(base=60, page_load=60, script=60)     # 超时时间设置为 60 秒
+        co.set_argument('--disable-blink-features=AutomationControlled')
+        co.set_pref('credentials_enable_service', False)
+        
+        co.set_argument('--disable-gpu')
+        co.set_argument('--disable-dev-shm-usage')
+        co.set_argument('--disable-extensions')
+        co.set_argument('--disable-logging')
+        co.set_argument('--disable-background-networking')
+        co.set_argument('--disable-default-apps')
+        co.set_argument('--disable-sync')
+        co.set_argument('--disable-translate')
+        co.set_argument('--no-first-run')
+        co.set_argument('--safebrowsing-disable-auto-update')
+        co.set_argument('--ignore-certificate-errors')
+        co.set_argument('--ignore-ssl-errors')
+        co.set_argument('--disable-web-security')
+        co.set_argument('--allow-running-insecure-content')
+        co.set_argument('--disable-features=IsolateOrigins,site-per-process')
+        co.set_argument('--disable-site-isolation-trials')
+        co.set_argument('--single-process')
+        co.set_argument('--disable-setuid-sandbox')
+        co.set_argument('--disable-hang-monitor')
+        co.set_argument('--disable-popup-blocking')
+        co.set_argument('--disable-prompt-on-repost')
+        co.set_argument('--disable-backgrounding-occluded-windows')
+        co.set_argument('--disable-renderer-backgrounding')
+        co.set_argument('--disable-ipc-flooding-protection')
+        co.set_argument('--memory-pressure-off')
+        co.set_argument('--js-flags=--max-old-space-size=512')
+        
+        co.set_timeouts(base=60, page_load=60, script=60)
         
         # 随机 User-Agent
         ua_list = [
@@ -101,12 +146,12 @@ class AliV3:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         ]
-        chrome_options.set_user_agent(random.choice(ua_list))
+        co.set_user_agent(random.choice(ua_list))
 
-        chrome_page = ChromiumPage(addr_or_opts=chrome_options)
-        chrome_page.set.timeouts(base=60, page_load=60, script=60)
+        page = ChromiumPage(addr_or_opts=co)
+        page.set.timeouts(base=60, page_load=60, script=60)
         
-        return chrome_page
+        return page
 
     def _safe_quit_browser(self, page):
         """安全关闭浏览器"""
@@ -171,6 +216,7 @@ class AliV3:
             print(f"🏁 终点 (含过冲 {int(overshoot)}px): ({int(end_x)}, {int(end_y)})")
             
             # 4. 执行滑动 (使用 CDP Input.dispatchMouseEvent 以获得更细粒度的控制)
+            
             # MouseDown
             self._run_cdp_safe(page, 'Input.dispatchMouseEvent', type='mousePressed', x=start_x, y=start_y, button='left', clickCount=1)
             
@@ -184,7 +230,9 @@ class AliV3:
                 
                 # EaseOutQuart
                 ease = 1 - pow(1 - progress, 4)
+                
                 current_x = start_x + (end_x - start_x) * ease
+                
                 current_y_drift = y_drift * ease
                 jitter = (random.random() - 0.5) * 6
                 current_y = start_y + current_y_drift + jitter
@@ -249,6 +297,7 @@ class AliV3:
                                     pass
                             else:
                                 # 放行初始化请求或其他非验证请求
+                                # print(f"⏩ 放行普通请求: {url}")
                                 try:
                                     page.run_cdp('Fetch.continueRequest', requestId=req_id)
                                 except Exception:
@@ -317,7 +366,7 @@ class AliV3:
                             break
                         continue
                     
-                    # 等待拦截数据 (最多10秒)
+                    # 等待拦截数据 (最多8秒)
                     print("⏳ 等待拦截 CaptchaVerifyParam...")
                     wait_start = time.time()
                     while time.time() - wait_start < 10:
@@ -389,7 +438,11 @@ class AliV3:
 
         _data = self.verifyParam
         deviceToekn = self.deviceToken
+
         print('deviceToekn', deviceToekn)
+        # print('_data', _data) # 数据太长，注释掉
+
+        import requests
 
         cookies = {
             'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
@@ -439,6 +492,7 @@ class AliV3:
             )
 
             print(f"Check API Status: {response.status_code}")
+            # print('Request Body:', json.dumps(json_data, indent=4, ensure_ascii=False))
             print("Check API Response:", response.text)
             
             resp_json = response.json()
@@ -447,8 +501,6 @@ class AliV3:
                 # 尝试获取 ticket
                 if resp_json.get('success') and resp_json.get('data', {}).get('captchaTicket'):
                     self.captchaTicket = resp_json['data']['captchaTicket']
-                    print("SUCCESS: Obtained CaptchaTicket:")
-                    print(self.captchaTicket)
             except Exception as e:
                 print("Failed to get captchaTicket from response:", e)
 
@@ -464,6 +516,7 @@ class AliV3:
         检查本地缓存，如果存在且未过期（20分钟），则直接使用。
         否则运行 getcookie.py 获取并更新缓存。
         """
+        need_refresh = True
         cached_data = {}
 
         # 尝试读取缓存
@@ -487,6 +540,9 @@ class AliV3:
             print("cookie缓存文件不存在，开始获取...")
 
         # 调用 getcookie.py 获取
+        cookies = None
+        headers = None
+        
         try:
             print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
             process = subprocess.Popen(
@@ -581,12 +637,44 @@ class AliV3:
             'captchaTicket': self.captchaTicket,
         }
 
-        try:
-            response = requests.post('https://passport.jlc.com/api/cas/login/with-password', cookies=cookies,
-                                     headers=headers, json=json_data, timeout=30)
-            print("Login Response:", response.text)
-        except Exception as e:
-            print(f"Login Request Failed: {e}")
+        # 增加登录时的代理请求逻辑，加入重试机制
+        max_retries = 5
+        for attempt in range(max_retries):
+            print(f"正在为登录请求获取代理IP (尝试 {attempt + 1}/{max_retries})...")
+            proxies = get_valid_proxy()
+            if proxies:
+                print(f"✅ 登录代理获取成功: {proxies.get('http')}")
+            else:
+                print("⚠ 登录代理获取失败，将直接使用本地网络发起请求")
+
+            try:
+                # 传入 proxies 参数
+                response = requests.post('https://passport.jlc.com/api/cas/login/with-password', cookies=cookies,
+                                         headers=headers, json=json_data, timeout=30, proxies=proxies)
+                
+                # 如果代理返回了非正常的网关错误，也可以视为代理失效进行重试
+                if response.status_code in [502, 503, 504]:
+                    print(f"⚠ 代理返回网关错误 (HTTP {response.status_code})，准备重新获取...")
+                    continue
+                    
+                # 输出结果
+                print("Login Response:", response.text)
+                break  # 请求成功，跳出重试循环
+                
+            except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout, 
+                    requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError, 
+                    requests.exceptions.RequestException) as e:
+                print(f"⚠ 代理无效或网络异常: {e}，准备重试...")
+            except Exception as e:
+                print(f"Login Request Failed: {e}")
+                # 发生其他未知异常时也重试
+                pass
+                
+        else:
+            print("❌ 连续 5 次登录请求均失败。")
+
+    def test(self):
+        pass
 
     def main(self, username, password):
         # 保存参数到实例变量
@@ -600,7 +688,8 @@ class AliV3:
             enc_password = pwdEncrypt(password)
             self.Login(enc_username, enc_password)
         else:
-            print("验证码获取失败，无法继续。")
+            print("验证码流程失败，无法继续登录。")
+
 
 if __name__ == '__main__':
     ali = AliV3()

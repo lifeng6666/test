@@ -114,6 +114,8 @@ def get_display_status(acc):
     if jindou_success:
         if jindou_status == '已签到过':
             return '已签到过'
+        elif jindou_status == '停签一次防风控':
+            return '停签一次防风控'
         
         # 动态拼接奖励标识
         suffix = ""

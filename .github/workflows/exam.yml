@@ -24,6 +24,7 @@ jobs:
           import os
           import json
           import math
+          import random
 
           raw_data = os.environ.get('RAW_ACCOUNTS', '')
           accounts = []
@@ -41,6 +42,8 @@ jobs:
                       accounts.append((username, password))
               except:
                   continue
+
+          random.shuffle(accounts)
 
           print(f"Total valid accounts found: {len(accounts)}")
 
@@ -112,7 +115,7 @@ jobs:
           pip install wheel==0.37.1
           pip install serverchan_sdk==1.0.6
           pip install PyExecJS
-          pip install DrissionPage
+          pip install DrissionPage DataRecorder DownloadKit
 
       - name: '准备Chrome驱动'
         uses: nanasess/setup-chromedriver@v2

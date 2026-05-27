@@ -48,6 +48,8 @@ jobs:
               except:
                   continue
 
+          random.shuffle(accounts)
+
           print(f"Total valid accounts found: {len(accounts)}")
 
           # 按50个一组切分
@@ -65,8 +67,6 @@ jobs:
                   "users": users_str,
                   "pwds": pwds_str
               })
-
-          random.shuffle(chunks)
           
           matrix_json = json.dumps(chunks)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
@@ -116,7 +116,7 @@ jobs:
           pip install wheel==0.37.1
           pip install serverchan_sdk==1.0.6
           pip install PyExecJS
-          pip install DrissionPage
+          pip install DrissionPage DataRecorder DownloadKit
 
       - name: '准备Chrome驱动'
         uses: nanasess/setup-chromedriver@v2
