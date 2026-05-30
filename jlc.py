@@ -7,6 +7,8 @@ import random
 import requests
 import multiprocessing
 import shutil
+import uuid
+import urllib.parse
 from contextlib import redirect_stdout
 from datetime import datetime
 from selenium import webdriver
@@ -159,6 +161,19 @@ def extract_secretkey_from_devtools(driver):
     
     return secretkey
 
+@with_retry
+def extract_secretkey_from_browser(driver):
+    """从浏览器全局变量或 DevTools 中提取 secretkey"""
+    try:
+        sk = driver.execute_script("return window._my_secretkey;")
+        if sk:
+            log(f"✅ 从浏览器底层请求提取到合法秘钥: {sk[:20]}...")
+            return sk
+    except Exception:
+        pass
+    
+    return extract_secretkey_from_devtools(driver)
+
 def get_valid_proxy(account_index):
     global disable_global_proxy, consecutive_proxy_fails
     proxy_api_url = "http://api.dmdaili.com/dmgetip.asp?apikey=b345ad7e&pwd=bca1fcb138fb91448d9cfe7f1099c6f6&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
@@ -220,8 +235,24 @@ def get_valid_proxy(account_index):
 class JLCClient:
     """调用嘉立创接口"""
     
-    def __init__(self, access_token, secretkey, account_index, driver, proxies=None):
+    def __init__(self, access_token, secretkey, account_index, driver, proxies=None, cookies=None):
         self.base_url = "https://m.jlc.com"
+        self.account_index = account_index
+        self.driver = driver
+        self.proxies = proxies
+        self.cookies = cookies or {}
+        
+        self.message = ""
+        self.initial_jindou = 0  # 签到前金豆数量
+        self.final_jindou = 0    # 签到后金豆数量
+        self.jindou_reward = 0   # 本次获得金豆（通过差值计算）
+        self.sign_status = "未知"  # 签到状态
+        self.has_weekly_reward = False  # 是否领取了普通周奖
+        self.has_special_reward = False # 是否领取了特殊的阻塞奖励
+        self.have_receive = True # 默认True，如果在接口中探测到未领取的奖励会置为False
+        
+        xsrf_token = urllib.parse.unquote(self.cookies.get('XSRF-TOKEN', ''))
+        
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'x-jlc-clienttype': 'WEB',
@@ -230,86 +261,75 @@ class JLCClient:
             'secretkey': secretkey,
             'Referer': 'https://m.jlc.com/mapp/pages/my/index',
         }
-        self.account_index = account_index
-        self.driver = driver
-        self.proxies = proxies
-        self.message = ""
-        self.initial_jindou = 0  # 签到前金豆数量
-        self.final_jindou = 0    # 签到后金豆数量
-        self.jindou_reward = 0   # 本次获得金豆（通过差值计算）
-        self.sign_status = "未知"  # 签到状态
-        self.has_weekly_reward = False  # 是否领取了普通7天奖励 (有周奖)
-        self.has_special_reward = False # 是否领取了特殊节点奖励 (有奖励)
-        self.have_receive = True # 默认True，如果在接口中探测到未领取的奖励会置为False
+        if xsrf_token:
+            self.headers['x-xsrf-token'] = xsrf_token
         
     def send_request(self, url, method='GET', use_proxy=True):
         """发送 API 请求"""
         global disable_global_proxy, consecutive_proxy_fails
         
-        if use_proxy and not disable_global_proxy:
-            max_proxy_retries = 20
-            for attempt in range(max_proxy_retries):
-                if not self.proxies:
-                    self.proxies = get_valid_proxy(self.account_index)
-                    
-                if not self.proxies:
-                    log(f"账号 {self.account_index} - ❌ 代理获取失败，放弃本次请求。")
-                    # get_valid_proxy 内部已经处理了获取失败时 consecutive_proxy_fails += 1
-                    return None
-                
-                try:
-                    if method.upper() == 'GET':
-                        response = requests.get(url, headers=self.headers, timeout=10, proxies=self.proxies)
-                    else:
-                        response = requests.post(url, headers=self.headers, timeout=10, proxies=self.proxies)
-                    
-                    if response.status_code == 200:
-                        consecutive_proxy_fails = 0
-                        return response.json()
-                    else:
-                        log(f"账号 {self.account_index} - ❌ 请求失败，状态码: {response.status_code}")
-                        return None
-                        
-                except requests.exceptions.ProxyError as e:
-                    log(f"账号 {self.account_index} - ⚠ 代理无效 (代理错误/拒绝连接): {e}，准备重新获取...")
-                    self.proxies = None
-                except requests.exceptions.ConnectTimeout as e:
-                    log(f"账号 {self.account_index} - ⚠ 代理无效 (连接超时): {e}，准备重新获取...")
-                    self.proxies = None
-                except requests.exceptions.ReadTimeout as e:
-                    log(f"账号 {self.account_index} - ⚠ 代理无效 (响应超时): {e}，准备重新获取...")
-                    self.proxies = None
-                except requests.exceptions.ConnectionError as e:
-                    log(f"账号 {self.account_index} - ⚠ 代理无效 (连接异常): {e}，准备重新获取...")
-                    self.proxies = None
-                except requests.exceptions.RequestException as e:
-                    log(f"账号 {self.account_index} - ⚠ 代理无效 (请求异常): {e}，准备重新获取...")
-                    self.proxies = None
-                except Exception as e:
-                    log(f"账号 {self.account_index} - ⚠ 请求出现未知异常 ({url}): {e}，准备重新获取...")
-                    self.proxies = None
+        # 如果要求使用代理，但实际上还没有代理，则获取一个
+        if use_proxy and not disable_global_proxy and not self.proxies:
+            self.proxies = get_valid_proxy(self.account_index)
             
-            log(f"账号 {self.account_index} - ❌ 连续 {max_proxy_retries} 次代理请求均失败。")
+        # 真正使用代理的条件：要求使用、没被禁用，且成功获取到了代理
+        is_actually_using_proxy = use_proxy and not disable_global_proxy and self.proxies is not None
+        
+        max_retries = 20 if is_actually_using_proxy else 1
+        
+        for attempt in range(max_retries):
+            try:
+                # 重新判定，因为过程中可能 disable_global_proxy 被修改
+                req_proxies = self.proxies if use_proxy and not disable_global_proxy else None
+                
+                if method.upper() == 'GET':
+                    response = requests.get(url, headers=self.headers, cookies=self.cookies, timeout=10, proxies=req_proxies)
+                else:
+                    response = requests.post(url, headers=self.headers, cookies=self.cookies, timeout=10, proxies=req_proxies)
+                
+                if response.status_code == 200:
+                    if req_proxies:
+                        consecutive_proxy_fails = 0
+                    try:
+                        return response.json()
+                    except ValueError:
+                        log(f"账号 {self.account_index} - ❌ 请求成功但接口返回了非 JSON 数据，状态码: 200，原始响应: {response.text}")
+                        return None
+                else:
+                    log(f"账号 {self.account_index} - ❌ 请求失败，状态码: {response.status_code}，原始响应: {response.text}")
+                    return None
+            except requests.exceptions.RequestException as e:
+                if use_proxy and not disable_global_proxy and self.proxies:
+                    if isinstance(e, requests.exceptions.ProxyError):
+                        error_type = "代理拒绝连接/代理错误"
+                    elif isinstance(e, requests.exceptions.ConnectTimeout):
+                        error_type = "连接代理超时"
+                    elif isinstance(e, requests.exceptions.ReadTimeout):
+                        error_type = "代理响应超时"
+                    elif isinstance(e, requests.exceptions.Timeout):
+                        error_type = "请求超时"
+                    elif isinstance(e, requests.exceptions.ConnectionError):
+                        error_type = "连接错误"
+                    else:
+                        error_type = "未知请求异常"
+                        
+                    log(f"账号 {self.account_index} - ⚠ 代理无效 ({error_type}: {e})，准备重新获取代理...")
+                    
+                    self.proxies = get_valid_proxy(self.account_index)
+                    if not self.proxies:
+                        break
+                else:
+                    log(f"账号 {self.account_index} - ❌ 请求异常 ({url}): {e}")
+                    return None
+        
+        if is_actually_using_proxy and self.proxies and use_proxy and not disable_global_proxy:
+            log(f"账号 {self.account_index} - ❌ 连续 {max_retries} 次代理请求失败")
             consecutive_proxy_fails += 1
             if consecutive_proxy_fails >= 5:
                 disable_global_proxy = True
                 log("⚠ 连续5次代理获取/使用失败，接下来的账号全部放弃使用代理！")
-            return None
-        else:
-            try:
-                if method.upper() == 'GET':
-                    response = requests.get(url, headers=self.headers, timeout=10)
-                else:
-                    response = requests.post(url, headers=self.headers, timeout=10)
                 
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    log(f"账号 {self.account_index} - ❌ 请求失败，状态码: {response.status_code}")
-                    return None
-            except Exception as e:
-                log(f"账号 {self.account_index} - ❌ 请求异常 ({url}): {e}")
-                return None
+        return None
     
     def get_user_info(self):
         """获取用户信息"""
@@ -317,6 +337,7 @@ class JLCClient:
         url = f"{self.base_url}/api/appPlatform/center/setting/selectPersonalInfo"
         
         max_retries = 5
+        data = None
         for attempt in range(max_retries):
             data = self.send_request(url)
             
@@ -326,22 +347,30 @@ class JLCClient:
                 
             # 重试前刷新页面，重新提取 token 和 secretkey
             if attempt < max_retries - 1:
+                if data:
+                    log(f"账号 {self.account_index} - ⚠ 获取用户信息未返回success，准备重试，原始响应: {json.dumps(data, ensure_ascii=False)}")
                 try:
-                    self.driver.get("https://m.jlc.com/")
-                    self.driver.refresh()
-                    WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(1 + random.uniform(0, 1))
                     navigate_and_interact_m_jlc(self.driver, self.account_index)
+                    
                     access_token = extract_token_from_local_storage(self.driver)
-                    secretkey = extract_secretkey_from_devtools(self.driver)
+                    secretkey = extract_secretkey_from_browser(self.driver)
                     if access_token:
                         self.headers['x-jlc-accesstoken'] = access_token
                     if secretkey:
                         self.headers['secretkey'] = secretkey
+                        
+                    # 同步获取最新的 cookies
+                    sel_cookies = self.driver.get_cookies()
+                    self.cookies = {c['name']: c['value'] for c in sel_cookies}
+                    xsrf_token = urllib.parse.unquote(self.cookies.get('XSRF-TOKEN', ''))
+                    if xsrf_token:
+                        self.headers['x-xsrf-token'] = xsrf_token
                 except:
                     pass  # 静默继续
         
         error_msg = data.get('message', '未知错误') if data else '请求失败'
+        if data:
+            log(f"账号 {self.account_index} - ⚠ 获取用户信息接口原始返回: {json.dumps(data, ensure_ascii=False)}")
         log(f"账号 {self.account_index} - ❌ 获取用户信息失败: {error_msg}")
         self.sign_status = f"获取用户信息失败:{error_msg}"
         return False
@@ -350,7 +379,9 @@ class JLCClient:
         """获取金豆数量"""
         log(f"账号 {self.account_index} - 获取金豆数量 (使用代理)...")
         url = f"{self.base_url}/api/activity/front/getCustomerIntegral"
+        
         max_retries = 5
+        data = None
         for attempt in range(max_retries):
             data = self.send_request(url)
             
@@ -360,21 +391,28 @@ class JLCClient:
             
             # 重试前刷新页面，重新提取 token 和 secretkey
             if attempt < max_retries - 1:
+                if data:
+                    log(f"账号 {self.account_index} - ⚠ 获取金豆未返回success，准备重试，原始响应: {json.dumps(data, ensure_ascii=False)}")
                 try:
-                    self.driver.get("https://m.jlc.com/")
-                    self.driver.refresh()
-                    WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(1 + random.uniform(0, 1))
                     navigate_and_interact_m_jlc(self.driver, self.account_index)
+                    
                     access_token = extract_token_from_local_storage(self.driver)
-                    secretkey = extract_secretkey_from_devtools(self.driver)
+                    secretkey = extract_secretkey_from_browser(self.driver)
                     if access_token:
                         self.headers['x-jlc-accesstoken'] = access_token
                     if secretkey:
                         self.headers['secretkey'] = secretkey
+                        
+                    sel_cookies = self.driver.get_cookies()
+                    self.cookies = {c['name']: c['value'] for c in sel_cookies}
+                    xsrf_token = urllib.parse.unquote(self.cookies.get('XSRF-TOKEN', ''))
+                    if xsrf_token:
+                        self.headers['x-xsrf-token'] = xsrf_token
                 except:
                     pass  # 静默继续
         
+        if data:
+            log(f"账号 {self.account_index} - ⚠ 获取金豆数量接口原始返回: {json.dumps(data, ensure_ascii=False)}")
         log(f"账号 {self.account_index} - ❌ 获取金豆数量失败")
         return 0
     
@@ -384,6 +422,7 @@ class JLCClient:
         url = f"{self.base_url}/api/activity/sign/getCurrentUserSignInConfig"
         
         max_retries = 5
+        data = None
         for attempt in range(max_retries):
             data = self.send_request(url)
             
@@ -407,22 +446,29 @@ class JLCClient:
                     
             # 重试前刷新页面，重新提取 token 和 secretkey
             if attempt < max_retries - 1:
+                if data:
+                    log(f"账号 {self.account_index} - ⚠ 检查签到状态未返回success，准备重试，原始响应: {json.dumps(data, ensure_ascii=False)}")
                 try:
-                    self.driver.get("https://m.jlc.com/")
-                    self.driver.refresh()
-                    WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(1 + random.uniform(0, 1))
                     navigate_and_interact_m_jlc(self.driver, self.account_index)
+                    
                     access_token = extract_token_from_local_storage(self.driver)
-                    secretkey = extract_secretkey_from_devtools(self.driver)
+                    secretkey = extract_secretkey_from_browser(self.driver)
                     if access_token:
                         self.headers['x-jlc-accesstoken'] = access_token
                     if secretkey:
                         self.headers['secretkey'] = secretkey
+                        
+                    sel_cookies = self.driver.get_cookies()
+                    self.cookies = {c['name']: c['value'] for c in sel_cookies}
+                    xsrf_token = urllib.parse.unquote(self.cookies.get('XSRF-TOKEN', ''))
+                    if xsrf_token:
+                        self.headers['x-xsrf-token'] = xsrf_token
                 except:
                     pass  # 静默继续
         
         error_msg = data.get('message', '未知错误') if data else '请求失败'
+        if data:
+            log(f"账号 {self.account_index} - ⚠ 检查签到状态接口原始返回: {json.dumps(data, ensure_ascii=False)}")
         log(f"账号 {self.account_index} - ❌ 检查签到状态失败: {error_msg}")
         self.sign_status = f"检查状态失败:{error_msg}"
         return None
@@ -440,6 +486,8 @@ class JLCClient:
             return True
         else:
             error_msg = data.get('message', '未知错误') if data else '请求失败'
+            if data:
+                log(f"账号 {self.account_index} - ⚠ 领取奖励金豆接口原始返回: {json.dumps(data, ensure_ascii=False)}")
             log(f"账号 {self.account_index} - ❌ 领取奖励金豆失败: {error_msg}")
             self.sign_status = f"领取奖励金豆失败:{error_msg}"
             return False
@@ -483,6 +531,9 @@ class JLCClient:
             error_msg = data.get('message', '未知错误') if data else '请求失败'
             self.message = error_msg
             
+            if data:
+                log(f"账号 {self.account_index} - ⚠ 签到接口原始返回: {json.dumps(data, ensure_ascii=False)}")
+            
             # 2. 如果之前状态未探测到，但在签到时被服务端强制拦截，也执行解锁领奖
             if "存在签到未领取" in error_msg:
                 log(f"账号 {self.account_index} - 签到触发特殊奖励阻塞，先领取奖励金豆...")
@@ -508,6 +559,8 @@ class JLCClient:
                                 return False
                     else:
                         retry_msg = retry_data.get('message', '未知错误') if retry_data else '请求失败'
+                        if retry_data:
+                            log(f"账号 {self.account_index} - ⚠ 重新签到接口原始返回: {json.dumps(retry_data, ensure_ascii=False)}")
                         log(f"账号 {self.account_index} - ❌ 领取奖励后签到失败: {retry_msg}")
                         self.sign_status = f"领取奖励后签到失败:{retry_msg}"
                         return False
@@ -530,6 +583,8 @@ class JLCClient:
             return True, "成功"
         else:
             error_msg = data.get('message', '未知错误') if data else '请求失败'
+            if data:
+                log(f"账号 {self.account_index} - ⚠ 领取周奖接口原始返回: {json.dumps(data, ensure_ascii=False)}")
             log(f"账号 {self.account_index} - ❌ 领取周奖失败: {error_msg}")
             return False, error_msg
     
@@ -604,15 +659,13 @@ class JLCClient:
         return True
 
 def navigate_and_interact_m_jlc(driver, account_index):
-    """在 m.jlc.com 刷新以触发网络请求"""
+    """访问 m.jlc.com 并等待页面正常加载完业务请求"""
     log(f"账号 {account_index} - 刷新页面以获取 Token 和 SecretKey...")
     
     try:
-        # 只需要刷新，等待页面加载，网络请求会自动发出
-        driver.refresh()
+        driver.get("https://m.jlc.com/")
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(2)
-        
+        time.sleep(4)
     except Exception as e:
         log(f"账号 {account_index} - 页面刷新出错: {e}")
 
@@ -900,10 +953,45 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                     driver = webdriver.Chrome(options=chrome_options)
                     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                     
+                    # 注入请求拦截器，在第一时间捕获前端生成的有效 secretkey
+                    intercept_js = """
+                    if (!window._jlc_sk_intercepted) {
+                        window._jlc_sk_intercepted = true;
+                        const origFetch = window.fetch;
+                        window.fetch = async function(...args) {
+                            try {
+                                if (args[1] && args[1].headers) {
+                                    let h = args[1].headers;
+                                    let sk = null;
+                                    if (typeof h.get === 'function') {
+                                        sk = h.get('secretkey') || h.get('SecretKey') || h.get('secretKey');
+                                    } else {
+                                        sk = h['secretkey'] || h['SecretKey'] || h['secretKey'];
+                                    }
+                                    if (sk) window._my_secretkey = sk;
+                                }
+                            } catch(e) {}
+                            return origFetch.apply(this, args);
+                        };
+                        
+                        const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+                        XMLHttpRequest.prototype.setRequestHeader = function(key, val) {
+                            if (key && key.toLowerCase() === 'secretkey') {
+                                window._my_secretkey = val;
+                            }
+                            return origSetHeader.apply(this, arguments);
+                        };
+                    }
+                    """
+                    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': intercept_js})
+                    
                     driver.set_page_load_timeout(15)
                     
                     driver.get("https://m.jlc.com/")
                     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    
+                    # 等待页面加载和后台API网络请求初始化完成
+                    time.sleep(4) 
                     
                     browser_success = True
                     break
@@ -938,50 +1026,134 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             # 使用已获取的 authCode 进行 JLC 登录
             log(f"账号 {account_index} - 正在使用 authCode 登录 m.jlc.com...")
             
-            # 使用 JS 进行登录
-            login_js = """
-            var code = arguments[0];
-            var callback = arguments[1];
-            var formData = new FormData();
-            formData.append('code', code);
+            # 提取页面的 secretkey
+            pre_secretkey = extract_secretkey_from_browser(driver)
+            fallback_secret = str(uuid.uuid4()).encode('utf-8').hex()
+            use_secret = pre_secretkey if pre_secretkey else fallback_secret
             
-            fetch('/api/login/login-by-code', {
-                method: 'POST',
-                body: formData,
-                headers: {
-                    'X-JLC-AccessToken': 'NONE'
-                }
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.code === 200 && data.data && data.data.accessToken) {
-                    window.localStorage.setItem('X-JLC-AccessToken', data.data.accessToken);
-                    callback(true);
-                } else {
-                    console.error('Login failed:', data);
-                    callback(false);
-                }
-            })
-            .catch(err => {
-                console.error('Login error:', err);
-                callback(false);
-            });
-            """
+            if not pre_secretkey:
+                log(f"账号 {account_index} - 已自动生成模拟密钥: {use_secret[:20]}...")
             
-            try:
-                login_success = driver.execute_async_script(login_js, auth_code)
-            except Exception as e:
-                log(f"账号 {account_index} - ❌ 执行 JS 登录脚本出错: {e}")
-                login_success = False
+            # 使用 Python requests 底层引擎来完全穿透 WAF 的 404 IP拦截
+            login_success = False
+            
+            sel_cookies = driver.get_cookies()
+            session_cookies = {c['name']: c['value'] for c in sel_cookies}
+            xsrf_token = urllib.parse.unquote(session_cookies.get('XSRF-TOKEN', ''))
+            
+            api_url = "https://m.jlc.com/api/login/login-by-code"
+            req_headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'X-JLC-ClientType': 'WEB',
+                'X-JLC-AccessToken': 'NONE',
+                'Origin': 'https://m.jlc.com',
+                'Referer': 'https://m.jlc.com/pages/my/index',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'secretkey': use_secret
+            }
+            
+            if xsrf_token:
+                req_headers['x-xsrf-token'] = xsrf_token
+            
+            # 为了防范机房 IP 触发 WAF 404，如果配置了代理，此处获取并使用代理
+            if not disable_global_proxy and current_proxies is None:
+                current_proxies = get_valid_proxy(account_index)
+            
+            is_actually_using_proxy = not disable_global_proxy and current_proxies is not None
+            max_login_retries = 20 if is_actually_using_proxy else 1
+            network_error_exhausted = False
+            
+            for login_attempt in range(max_login_retries):
+                try:
+                    log(f"账号 {account_index} - 正在发起登录请求 (代理: {'已启用' if current_proxies else '未启用'}) (尝试 {login_attempt + 1}/{max_login_retries})...")
+                    
+                    # 按照抓包格式，优先使用 multipart/form-data 模拟发送
+                    m_files = {'code': (None, auth_code)}
+                    resp = requests.post(api_url, headers=req_headers, cookies=session_cookies, files=m_files, proxies=current_proxies, timeout=15)
+                    
+                    # 如果遇到 WAF 拦截或者解析拦截导致的 404，进行 payload 降维打击探测
+                    if resp.status_code == 404:
+                        log(f"账号 {account_index} - ⚠ multipart表单遇到路由 404，可能被拦截，尝试切换为 JSON 格式...")
+                        resp = requests.post(api_url, headers=req_headers, cookies=session_cookies, json={'code': auth_code}, proxies=current_proxies, timeout=15)
+                        
+                    if resp.status_code == 404:
+                        log(f"账号 {account_index} - ⚠ JSON格式仍遇 404，尝试切换为 URL Encoded 格式...")
+                        resp = requests.post(api_url, headers=req_headers, cookies=session_cookies, data={'code': auth_code}, proxies=current_proxies, timeout=15)
+                        
+                    if resp.status_code == 200:
+                        if current_proxies:
+                            consecutive_proxy_fails = 0
+                        try:
+                            resp_data = resp.json()
+                            if resp_data.get('code') == 200 and resp_data.get('data', {}).get('accessToken'):
+                                access_token = resp_data['data']['accessToken']
+                                
+                                # 同步会话Cookie并注入Token
+                                session_cookies.update(resp.cookies.get_dict())
+                                for c_name, c_value in resp.cookies.get_dict().items():
+                                    try:
+                                        driver.add_cookie({'name': c_name, 'value': c_value, 'domain': '.jlc.com', 'path': '/'})
+                                    except:
+                                        pass
+                                        
+                                driver.execute_script(f"window.localStorage.setItem('X-JLC-AccessToken', '{access_token}');")
+                                login_success = True
+                                log(f"账号 {account_index} - ✅ 登录接口请求成功！")
+                            else:
+                                log(f"账号 {account_index} - ❌ 接口请求通过，但业务返回异常: {resp.text}")
+                        except Exception:
+                            log(f"账号 {account_index} - ❌ 请求成功，但解析异常非JSON结构: {resp.text}")
+                        break  # 请求成功或遇到业务错误，直接跳出重试循环
+                    else:
+                        log(f"账号 {account_index} - ❌ 底层登录接口响应失败，HTTP 状态码: {resp.status_code}, 返回: {resp.text}")
+                        break  # 接口响应报错非网络错误，同样跳出不再重试
+                        
+                except requests.exceptions.RequestException as e:
+                    if is_actually_using_proxy and current_proxies:
+                        if isinstance(e, requests.exceptions.ProxyError):
+                            error_type = "代理拒绝连接/代理错误"
+                        elif isinstance(e, requests.exceptions.ConnectTimeout):
+                            error_type = "连接代理超时"
+                        elif isinstance(e, requests.exceptions.ReadTimeout):
+                            error_type = "代理响应超时"
+                        elif isinstance(e, requests.exceptions.Timeout):
+                            error_type = "请求超时"
+                        elif isinstance(e, requests.exceptions.ConnectionError):
+                            error_type = "连接错误"
+                        else:
+                            error_type = "未知请求异常"
+                            
+                        log(f"账号 {account_index} - ⚠ 底层登录请求网络异常 ({error_type}: {e})，准备重新获取代理...")
+                        current_proxies = get_valid_proxy(account_index)
+                        if not current_proxies:
+                            network_error_exhausted = True
+                            break
+                        
+                        # 标记最后一次如果还是异常就说明耗尽了次数
+                        if login_attempt == max_login_retries - 1:
+                            network_error_exhausted = True
+                    else:
+                        log(f"账号 {account_index} - ❌ 底层登录请求发生网络异常: {e}")
+                        break
+                except Exception as e:
+                    log(f"账号 {account_index} - ❌ 底层登录请求发生未知异常: {e}")
+                    break
+                    
+            if network_error_exhausted and is_actually_using_proxy and not disable_global_proxy:
+                log(f"账号 {account_index} - ❌ 连续 {max_login_retries} 次底层登录代理请求网络异常或失败")
+                consecutive_proxy_fails += 1
+                if consecutive_proxy_fails >= 5:
+                    disable_global_proxy = True
+                    log("⚠ 连续5次代理获取/使用失败，接下来的账号全部放弃使用代理！")
             
             if login_success:
                 result['jlc_login_success'] = True  # 标记金豆签到的JLC登录成功
-                log(f"账号 {account_index} - ✅ m.jlc.com 登录接口调用成功")
                 
+                # 重新刷新让前端以已登录态发起真实的秘钥协商
                 navigate_and_interact_m_jlc(driver, account_index)
                 
                 access_token = extract_token_from_local_storage(driver)
-                secretkey = extract_secretkey_from_devtools(driver)
+                secretkey = extract_secretkey_from_browser(driver)
                 
                 result['token_extracted'] = bool(access_token)
                 result['secretkey_extracted'] = bool(secretkey)
@@ -989,7 +1161,7 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                 if access_token and secretkey:
                     log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
                     
-                    jlc_client = JLCClient(access_token, secretkey, account_index, driver, current_proxies)
+                    jlc_client = JLCClient(access_token, secretkey, account_index, driver, current_proxies, cookies=session_cookies)
                     jindou_success = jlc_client.execute_full_process()
                     
                     # 记录金豆签到结果
@@ -1413,7 +1585,7 @@ def main():
         
         # 密码错误账号的特殊显示
         if password_error:
-            log(f"账号 {account_index} 详细结果: [密码错误]")
+            log(f"账号 {account_index} 详细结果:[密码错误]")
             log("  └── 状态: ❌ 账号或密码错误，跳过此账号")
         else:
             log(f"账号 {account_index} 详细结果:{retry_label}")
