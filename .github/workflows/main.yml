@@ -80,6 +80,8 @@ jobs:
   signin-process:
     needs: generate-matrix
     runs-on: ubuntu-22.04
+    env:
+      JLC_ACCOUNT: ${{ secrets.JLC_ACCOUNT }}
     strategy:
       max-parallel: 20
       fail-fast: false
@@ -138,7 +140,7 @@ jobs:
           DISPLAY: ':99'
         run: |
           echo "正在运行第 ${{ matrix.index }} 组账号..."
-          python ./jlc.py "${{ matrix.users }}" "${{ matrix.pwds }}" "true" "${{ matrix.index }}"
+          python ./jlc.py "true" "${{ matrix.index }}"
 
       - name: '重命名结果文件'
         if: always()
@@ -242,14 +244,14 @@ jobs:
             echo "excel_file=" >> $GITHUB_OUTPUT
           fi
 
-      - name: '上传金豆排名Excel'
-        if: steps.get-excel.outputs.excel_file != ''
-        uses: actions/upload-artifact@v7
-        with:
-          path: ${{ steps.get-excel.outputs.excel_file }}
-          if-no-files-found: ignore
-          archive: false
-          retention-days: 5
+      # - name: '上传金豆排名Excel'
+      #   if: steps.get-excel.outputs.excel_file != ''
+      #   uses: actions/upload-artifact@v7
+      #   with:
+      #     path: ${{ steps.get-excel.outputs.excel_file }}
+      #     if-no-files-found: ignore
+      #     archive: false
+      #     retention-days: 5
 
       - name: '清理 GitHub 界面的临时 JSON Artifacts'
         uses: geekyeggo/delete-artifact@v6

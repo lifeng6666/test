@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import tempfile
+import math
 import random
 import requests
 import multiprocessing
@@ -1510,25 +1511,41 @@ def calculate_year_end_prediction(current_beans):
 def main():
     global in_summary
     
-    if len(sys.argv) < 3:
-        print("用法: python jlc.py 账号1,账号2,账号3... 密码1,密码2,密码3... [失败退出标志] [账号组编号]")
-        print("示例: python jlc.py user1,user2,user3 pwd1,pwd2,pwd3")
-        print("示例: python jlc.py user1,user2,user3 pwd1,pwd2,pwd3 true")
-        print("示例: python jlc.py user1,user2,user3 pwd1,pwd2,pwd3 true 4")
+    if len(sys.argv) < 2:
+        print("用法: python jlc.py [失败退出标志] [账号组编号]")
         print("失败退出标志: 不传或任意值-关闭, true-开启(任意账号签到失败时返回非零退出码)")
         print("账号组编号: 只能输入数字，输入其他值则忽略")
         sys.exit(1)
+
+    # 解析失败退出标志，默认为关闭
+    enable_failure_exit = (sys.argv[1].lower() == 'true')
+    log(f"失败退出功能: {'开启' if enable_failure_exit else '关闭'}")
+    # 解析第3个参数（账号组编号），只接受纯数字，其他值忽略
+    index = sys.argv[2] if sys.argv[2].isdigit() else None
+
+    rawAccounts = os.getenv('JLC_ACCOUNT', '')
+    accounts = []
     
+    # 清洗数据
+    for line in rawAccounts.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#') or ':' not in line:
+            continue
+        try:
+            parts = line.split(':', 1)
+            username = parts[0].strip()
+            password = parts[1].strip()
+            if username and password:
+                accounts.append((username, password))
+        except:
+            continue
+
+    batch = accounts[index*50 : (index+1)*50]
+    usernames = ",".join([x[0] for x in batch])
+    passwords = ",".join([x[1] for x in batch])
+
     usernames = [u.strip() for u in sys.argv[1].split(',') if u.strip()]
     passwords = [p.strip() for p in sys.argv[2].split(',') if p.strip()]
-    
-    # 解析失败退出标志，默认为关闭
-    enable_failure_exit = (sys.argv[3].lower() == 'true') if len(sys.argv) >= 4 else False
-    
-    # 解析第4个参数（账号组编号），只接受纯数字，其他值忽略
-    account_group = sys.argv[4] if len(sys.argv) >= 5 and sys.argv[4].isdigit() else None
-    
-    log(f"失败退出功能: {'开启' if enable_failure_exit else '关闭'}")
     
     if len(usernames) != len(passwords):
         log("❌ 错误: 账号和密码数量不匹配!")
