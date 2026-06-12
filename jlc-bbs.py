@@ -61,8 +61,9 @@ def get_valid_proxy(account_proxy_fails):
 
     if account_proxy_fails >= 100:
         return None, account_proxy_fails
-
-    api_url = "http://api.dmdaili.com/dmgetip.asp?apikey=b345ad7e&pwd=bca1fcb138fb91448d9cfe7f1099c6f6&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
+    apikey = os.getenv('DM_APIKEY')
+    pwd = os.getenv('DM_PWD')
+    api_url = f"http://api.dmdaili.com/dmgetip.asp?apikey={apikey}&pwd={pwd}&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
 
     while True:
         if account_proxy_fails >= 100:
@@ -1455,8 +1456,8 @@ def main():
                 push_reasons.append(reason_str)
 
     # === 推送决策 ===
-    # 去重 # 不需要去重
-    # push_reasons = list(dict.fromkeys(push_reasons))
+    # 去重
+    push_reasons = list(dict.fromkeys(push_reasons))
     should_push = len(push_reasons) > 0
 
     if should_push:
