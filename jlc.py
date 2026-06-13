@@ -1521,7 +1521,7 @@ def main():
     enable_failure_exit = (sys.argv[1].lower() == 'true')
     log(f"失败退出功能: {'开启' if enable_failure_exit else '关闭'}")
     # 解析第3个参数（账号组编号），只接受纯数字，其他值忽略
-    index = int(sys.argv[2]) if sys.argv[2].isdigit() else None
+    account_group = int(sys.argv[2]) if sys.argv[2].isdigit() else None
 
     rawAccounts = os.getenv('JLC_ACCOUNT', '')
     accounts = []
@@ -1540,7 +1540,7 @@ def main():
         except:
             continue
 
-    batch = accounts[index*50 : (index+1)*50]
+    batch = accounts[account_group*50 : (account_group+1)*50]
     usernames = ",".join([x[0] for x in batch])
     passwords = ",".join([x[1] for x in batch])
 
