@@ -1541,11 +1541,11 @@ def main():
             continue
 
     batch = accounts[account_group*50 : (account_group+1)*50]
-    usernames = ",".join([x[0] for x in batch])
-    passwords = ",".join([x[1] for x in batch])
+    argv1 = ",".join([x[0] for x in batch])
+    argv2 = ",".join([x[1] for x in batch])
 
-    usernames = [u.strip() for u in sys.argv[1].split(',') if u.strip()]
-    passwords = [p.strip() for p in sys.argv[2].split(',') if p.strip()]
+    usernames = [u.strip() for u in argv1.split(',') if u.strip()]
+    passwords = [p.strip() for p in argv2.split(',') if p.strip()]
     
     if len(usernames) != len(passwords):
         log("❌ 错误: 账号和密码数量不匹配!")
