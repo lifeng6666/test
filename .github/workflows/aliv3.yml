@@ -3,6 +3,12 @@ name: 测试：aliv3
 on:
   workflow_dispatch:  # 手动触发
 
+env:
+  # 设置时区为北京时间
+  TZ: Asia/Shanghai
+  DM_APIKEY: ${{ secrets.DM_APIKEY }}
+  DM_PWD: ${{ secrets.DM_PWD }}
+
 jobs:
   running:
     runs-on: ubuntu-22.04
