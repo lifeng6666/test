@@ -53,7 +53,6 @@ class AliV3:
     
         # 核心修复点：随机分配端口，隔离上下文，避免与主程序的 DrissionPage 实例冲突
         chrome_options.auto_port()
-
         chrome_options.set_argument('--headless=new')  # 无头模式
         chrome_options.set_argument('--no-sandbox')    # 禁用沙箱模式
         chrome_options.set_argument('--window-size=415,900') # 页面大小设置为415*900
@@ -210,7 +209,7 @@ class AliV3:
     def getCap(self):
         page = None
         local_html_path = Path(__file__).parent / 'aliv3.html'
-        target_url = local_html_path.as_uri() + "?prefix=1tbpug&SceneId=6mw4mrmg"
+        target_url = local_html_path.as_uri() + "?prefix=1tbpug&SceneId=6mw4mrmg&auto=intercept"
         max_browser_retries = 3
         
         for browser_attempt in range(1, max_browser_retries + 1):
