@@ -5,6 +5,12 @@ on:
   schedule:
     - cron: '0 0 2 * *'
 
+env:
+  # 设置时区为北京时间
+  TZ: Asia/Shanghai
+  DM_APIKEY: ${{ secrets.DM_APIKEY }}
+  DM_PWD: ${{ secrets.DM_PWD }}
+
 jobs:
   # ==================================================================================
   # 数据预处理
