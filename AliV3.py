@@ -5,25 +5,27 @@ import time
 import sys
 import textwrap
 import random
+import math
 from functools import partial
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 from DrissionPage import ChromiumPage, ChromiumOptions
 from pathlib import Path
-from Utils import pwdEncrypt
-import requests
 
 subprocess.Popen = partial(subprocess.Popen, encoding='utf-8', errors='ignore')
 
-# sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
-# sys.stderr = open(sys.stderr.fileno(), mode='w', encoding='utf-8', buffering=1)
+import requests
+
+from Utils import pwdEncrypt
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 proxy = None
 
 def get_valid_proxy():
-    """获取一个代理IP"""
+    """获取代理IP"""
     apikey = os.getenv('DM_APIKEY')
     pwd = os.getenv('DM_PWD')
-    proxy_api_url = f"http://api.dmdaili.com/dmgetip.asp?apikey={apikey}&pwd={pwd}&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
+    proxy_api_url = f"http://need1.dmdaili.com:7771/dmgetip.asp?apikey={apikey}&pwd={pwd}&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
     max_attempts = 100
     attempt = 0
     
@@ -107,10 +109,9 @@ class AliV3:
     def _setup_browser(self):
         """配置并启动 DrissionPage"""
         co = ChromiumOptions()
-        co.auto_port()
-        co.set_argument('--headless=new')
+        co.set_argument('--headless=new')  # 无头模式
         co.set_argument('--no-sandbox')
-        co.set_argument('--window-size=415,900')
+        co.set_argument('--window-size=415,900') # 页面大小设置为415*900
         
         # 防检测参数
         co.set_argument('--disable-blink-features=AutomationControlled')
@@ -268,12 +269,12 @@ class AliV3:
     def getCap(self):
         page = None
         local_html_path = Path(__file__).parent / 'aliv3.html'
-        target_url = local_html_path.as_uri() + "?prefix=1tbpug&SceneId=6mw4mrmg&auto=intercept"
+        target_url = local_html_path.as_uri() + "?prefix=1tbpug&SceneId=6mw4mrmg"
         max_browser_retries = 3
         
         for browser_attempt in range(1, max_browser_retries + 1):
             try:
-                print(f"🌐 浏览器实例 {browser_attempt}/{max_browser_retries}")
+                print(f"\n🌐 浏览器实例 {browser_attempt}/{max_browser_retries}")
                 
                 self._safe_quit_browser(page)
                 time.sleep(1)
@@ -288,7 +289,7 @@ class AliV3:
                         url = request.get('url', '')
                         
                         # 目标：拦截 https://1tbpug.captcha-open.aliyuncs.com/
-                        if '1tbpug.captcha-open.aliyuncs.com' in url:
+                        if 'captcha-open.aliyuncs.com' in url:
                             # 获取 Payload
                             post_data = request.get('postData')
                             
@@ -328,7 +329,7 @@ class AliV3:
                 
                 max_retries = 10
                 for attempt in range(1, max_retries + 1):
-                    print(f"🔄 第 {attempt}/{max_retries} 次尝试获取验证码...")
+                    print(f"\n🔄 第 {attempt}/{max_retries} 次尝试获取验证码...")
                     self.intercepted_data = None
                     self.verifyParam = None
                     self.deviceToken = None
@@ -381,41 +382,15 @@ class AliV3:
                         time.sleep(0.1)
                     
                     if not self.intercepted_data:
-                        print("❌ CDP拦截未获取到数据，尝试从页面DOM获取...")
-                        try:
-                            verify_param_textarea = page.ele('#verify-param', timeout=3)
-                            if verify_param_textarea and verify_param_textarea.value:
-                                print("✅ 从页面DOM成功获取到验证参数")
-                                verify_param_json = verify_param_textarea.value
-                                json_data = json.loads(verify_param_json)
-                                self.verifyParam = json_data.get('data')
-                                self.deviceToken = json_data.get('deviceToken')
-                                self.CertifyId = json_data.get('certifyId')
-                                print("🎉 成功解析验证参数")
-                                
-                                check_res = self.Sumbit_All()
-                                if check_res and check_res.get('success') and check_res.get('code') == 200:
-                                    res_data = check_res.get('data', {})
-                                    if res_data.get('checkSuccess') is False:
-                                        print(f"❌ 滑块验证失败: {res_data.get('errMessage')}，重试...")
-                                        continue
-                                    elif 'captchaTicket' in res_data:
-                                        print("✅ 滑块验证成功！")
-                                        self._safe_quit_browser(page)
-                                        return True
-                                print(f"❌ 接口验证返回异常: {check_res}，重试...")
-                                continue
-                            else:
-                                print("❌ 页面DOM中也未找到验证参数，重试...")
-                                continue
-                        except Exception as e:
-                            print(f"❌ 从页面DOM获取失败: {e}，重试...")
-                            continue
+                        print("❌ 超时未拦截到验证数据，重试...")
+                        continue
                     
-                    # 解析拦截到的数据 (CDP拦截路径)
+                    # 解析拦截到的数据
                     try:
+                        # 数据格式: AccessKeyId=...&CaptchaVerifyParam=...
                         parsed = parse_qs(self.intercepted_data)
                         if 'CaptchaVerifyParam' in parsed:
+                            # CaptchaVerifyParam 是 URL 编码的 JSON 字符串
                             verify_param_json = parsed['CaptchaVerifyParam'][0]
                             json_data = json.loads(verify_param_json)
                             

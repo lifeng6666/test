@@ -1,12 +1,20 @@
 import subprocess
-import execjs
 from functools import partial
 
 subprocess.Popen = partial(subprocess.Popen, encoding='utf-8', errors='ignore')
+import execjs
+
 
 def MatchArgs(ver):
-    # sg.057.a3c65188d8471228.js
-    ver = ver.split('/')[1].split('.')[1] #057
+    name_part = ver.split('/')[1]  # sg.057.a3c65188d8471228.js
+    # 去掉.js扩展名
+    name_without_ext = name_part[:-3]  # sg.057.a3c65188d8471228
+    # 按点分割
+    parts = name_without_ext.split('.')  # ['sg', '057', 'a3c65188d8471228']
+
+    ver = parts[1]  # 057
+
+    print('ver', ver)
 
     storage = {
         "069": "7sgj4pa0sqsoim5y",

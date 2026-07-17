@@ -224,26 +224,22 @@ class AliV3:
         
         for browser_attempt in range(1, max_browser_retries + 1):
             try:
-                print(f"\n🌐 浏览器实例 {browser_attempt}/{max_browser_retries}")
+                print(f"\n🌐 浏览器实例 {browser_attempt}/{max_browser_retries}", flush=True)
                 
                 self._safe_quit_browser(page)
                 time.sleep(1)
                 
                 page = self._setup_browser()
                 
-                # 定义拦截回调
                 def on_request_paused(**kwargs):
                     try:
                         req_id = kwargs['requestId']
                         request = kwargs.get('request', {})
                         url = request.get('url', '')
                         
-                        # 目标：拦截 https://1tbpug.captcha-open.aliyuncs.com/
                         if 'captcha-open.aliyuncs.com' in url:
-                            # 获取 Payload
                             post_data = request.get('postData')
                             
-                            # 只有当请求包含 CaptchaVerifyParam 时才拦截
                             if post_data and 'CaptchaVerifyParam' in post_data:
                                 print(f"🛑 拦截到目标验证请求: {url}")
                                 self.intercepted_data = post_data
@@ -253,28 +249,22 @@ class AliV3:
                                 except Exception:
                                     pass
                             else:
-                                # 放行初始化请求或其他非验证请求
-                                # print(f"⏩ 放行普通请求: {url}")
                                 try:
                                     page.run_cdp('Fetch.continueRequest', requestId=req_id)
                                 except Exception:
                                     pass
                         else:
-                            # 放行其他请求
                             try:
                                 page.run_cdp('Fetch.continueRequest', requestId=req_id)
                             except Exception:
                                 pass
                     except Exception as e:
-                        # 防止回调报错影响流程
                         try:
                             page.run_cdp('Fetch.continueRequest', requestId=kwargs['requestId'])
                         except:
                             pass
 
-                # 启用 Fetch 拦截
                 self._run_cdp_safe(page, 'Fetch.enable', patterns=[{'urlPattern': '*'}])
-                # 设置回调
                 page.driver.set_callback('Fetch.requestPaused', on_request_paused)
                 
                 max_retries = 10
@@ -286,7 +276,6 @@ class AliV3:
                     self.CertifyId = None
                     
                     try:
-                        # 打开/刷新页面
                         page.get(target_url, timeout=30)
                     except Exception as e:
                         print(f"页面加载异常: {e}")
@@ -297,8 +286,6 @@ class AliV3:
                     
                     time.sleep(1)
                     
-                    # 等待滑块元素出现
-                    # 使用 ele_displayed 确保元素可见
                     try:
                         if not page.wait.ele_displayed('#aliyunCaptcha-sliding-slider', timeout=10):
                             print("加载滑块超时，刷新重试...")
@@ -312,7 +299,6 @@ class AliV3:
                     
                     time.sleep(0.5)
                     
-                    # 执行自动化过滑块逻辑
                     try:
                         if not self._slide_logic(page):
                             continue
@@ -323,7 +309,10 @@ class AliV3:
                             break
                         continue
                     
-                    # 等待拦截数据 (最多10秒)
+                    time.sleep(1)
+                    page.get_screenshot(path=f'slide_result_{attempt}.png')
+                    print(f"📸 已保存滑块后的状态截图: slide_result_{attempt}.png")
+
                     print("⏳ 等待拦截 CaptchaVerifyParam...")
                     wait_start = time.time()
                     while time.time() - wait_start < 10:
@@ -335,12 +324,9 @@ class AliV3:
                         print("❌ 超时未拦截到验证数据，重试...")
                         continue
                     
-                    # 解析拦截到的数据
                     try:
-                        # 数据格式: AccessKeyId=...&CaptchaVerifyParam=...
                         parsed = parse_qs(self.intercepted_data)
                         if 'CaptchaVerifyParam' in parsed:
-                            # CaptchaVerifyParam 是 URL 编码的 JSON 字符串
                             verify_param_json = parsed['CaptchaVerifyParam'][0]
                             json_data = json.loads(verify_param_json)
                             
@@ -350,10 +336,8 @@ class AliV3:
                             
                             print("🎉 成功解析验证参数")
                             
-                            # 立即调用 check-ali-captcha
                             check_res = self.Sumbit_All()
                             
-                            # 检查验证结果
                             if check_res and check_res.get('success') and check_res.get('code') == 200:
                                 res_data = check_res.get('data', {})
                                 if res_data.get('checkSuccess') is False:
@@ -372,6 +356,7 @@ class AliV3:
                         print(f"❌ 解析数据或验证异常: {e}，重试...")
                         continue
                 else:
+                    # 当内层 for 循环正常结束（未触发 break）时执行，继续外层循环
                     continue
                 
                 print("🔄 浏览器需要重启...")
@@ -397,9 +382,6 @@ class AliV3:
         deviceToekn = self.deviceToken
 
         print('deviceToekn', deviceToekn)
-        # print('_data', _data) # 数据太长，注释掉
-
-        import requests
 
         cookies = {
             'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
@@ -449,7 +431,6 @@ class AliV3:
             )
 
             print(f"Check API Status: {response.status_code}")
-            # print('Request Body:', json.dumps(json_data, indent=4, ensure_ascii=False))
             print("Check API Response:", response.text)
             
             resp_json = response.json()
