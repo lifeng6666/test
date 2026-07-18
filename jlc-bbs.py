@@ -411,42 +411,89 @@ def perform_login_flow(driver, username, password, max_retries=3):
 
 # ======================== BBS 功能函数 ========================
 def extract_secretkey(driver, max_retries=5):
-    """从浏览器性能日志中提取 secretkey"""
+    """从浏览器性能日志中提取 secretkey，增加诊断日志"""
+    
+    def _check_headers(headers):
+        if not headers:
+            return None
+        return (
+            headers.get("secretkey")
+            or headers.get("SecretKey")
+            or headers.get("secretKey")
+            or headers.get("SECRETKEY")
+            or headers.get("Secretkey")
+        )
+
     for attempt in range(max_retries):
+        bbs_requests_found = 0
         try:
             logs = driver.get_log("performance")
+            log(f"📊 性能日志条目数: {len(logs)}")
+            
             for entry in logs:
                 try:
                     message = json.loads(entry["message"])
                     msg_method = message.get("message", {}).get("method", "")
 
-                    headers = {}
                     if msg_method == "Network.requestWillBeSent":
                         req = message["message"]["params"]["request"]
                         url = req.get("url", "")
                         if "jlc-bbs.com" in url:
+                            bbs_requests_found += 1
                             headers = req.get("headers", {})
+                            sk = _check_headers(headers)
+                            if sk:
+                                log(f"✅ 从请求头提取 secretkey: {sk[:20]}...")
+                                return sk
+                            if bbs_requests_found <= 3:
+                                header_keys = list(headers.keys())
+                                log(f"📋 jlc-bbs.com 请求 [{bbs_requests_found}]: {url[:80]}")
+                                log(f"📋 请求头关键字段: {header_keys}")
                     elif msg_method == "Network.responseReceived":
                         resp = message["message"]["params"]["response"]
                         url = resp.get("url", "")
                         if "jlc-bbs.com" in url:
                             headers = resp.get("requestHeaders", {})
-
-                    if headers:
-                        sk = (
-                            headers.get("secretkey")
-                            or headers.get("SecretKey")
-                            or headers.get("secretKey")
-                            or headers.get("SECRETKEY")
-                            or headers.get("Secretkey")
-                        )
-                        if sk:
-                            log(f"✅ 成功提取 secretkey: {sk[:20]}...")
-                            return sk
+                            sk = _check_headers(headers)
+                            if sk:
+                                log(f"✅ 从响应头提取 secretkey: {sk[:20]}...")
+                                return sk
                 except Exception:
                     continue
+            
+            if bbs_requests_found == 0:
+                log("⚠ 性能日志中未找到 jlc-bbs.com 请求")
+            else:
+                log(f"⚠ 找到 {bbs_requests_found} 个 jlc-bbs.com 请求，但未发现 secretkey")
+                
         except Exception as e:
-            log(f"⚠ 提取 secretkey 异常: {e}")
+            log(f"⚠ 从性能日志提取 secretkey 异常: {e}")
+
+        try:
+            sk = driver.execute_script("return localStorage.getItem('secretkey') || localStorage.getItem('SecretKey') || localStorage.getItem('secretKey')")
+            if sk:
+                log(f"✅ 从 localStorage 提取 secretkey: {sk[:20]}...")
+                return sk
+        except Exception as e:
+            log(f"⚠ 从 localStorage 提取 secretkey 异常: {e}")
+
+        try:
+            sk = driver.execute_script("""
+                var keys = Object.keys(window);
+                for (var i = 0; i < keys.length; i++) {
+                    var key = keys[i];
+                    if (key.toLowerCase().includes('secretkey')) {
+                        var val = window[key];
+                        if (typeof val === 'string' && val.length > 20) return val;
+                    }
+                }
+                return null;
+            """)
+            if sk:
+                log(f"✅ 从全局变量提取 secretkey: {sk[:20]}...")
+                return sk
+        except Exception as e:
+            log(f"⚠ 从全局变量提取 secretkey 异常: {e}")
 
         if attempt < max_retries - 1:
             log(f"⚠ 未提取到 secretkey，等待3秒后重试 ({attempt + 1}/{max_retries})...")
