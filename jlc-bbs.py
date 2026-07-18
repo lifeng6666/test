@@ -438,6 +438,7 @@ def extract_secretkey(driver, max_retries=5):
                             or headers.get("SecretKey")
                             or headers.get("secretKey")
                             or headers.get("SECRETKEY")
+                            or headers.get("Secretkey")
                         )
                         if sk:
                             log(f"✅ 成功提取 secretkey: {sk[:20]}...")
@@ -1242,7 +1243,6 @@ def main():
 
 
     fail_exit = (sys.argv[1].lower() == "true")
-    log(f"失败退出功能: {'开启' if fail_exit else '关闭'}")
 
     account_group = int(sys.argv[2]) if sys.argv[2].isdigit() else None
 

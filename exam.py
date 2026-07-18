@@ -757,7 +757,6 @@ def main():
     # passwords = sys.argv[2].split(',')
     
     fail_exit = (sys.argv[1].lower() == 'true')
-    log(f"失败退出功能: {'开启' if fail_exit else '关闭'}")
 
     account_group = int(sys.argv[2]) if sys.argv[2].isdigit() else None
 
