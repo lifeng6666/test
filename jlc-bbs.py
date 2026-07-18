@@ -411,7 +411,7 @@ def perform_login_flow(driver, username, password, max_retries=3):
 
 # ======================== BBS 功能函数 ========================
 def extract_secretkey(driver, max_retries=5):
-    """从浏览器性能日志中提取 secretkey，先触发API请求再提取"""
+    """从浏览器性能日志和API响应中提取 secretkey"""
     
     def _check_headers(headers):
         if not headers:
@@ -423,6 +423,37 @@ def extract_secretkey(driver, max_retries=5):
             or headers.get("SECRETKEY")
             or headers.get("Secretkey")
         )
+
+    def _fetch_secretkey_directly():
+        """直接调用secret/update接口获取secretkey"""
+        try:
+            log("📡 调用 secret/update 接口获取 secretkey...")
+            js_code = """
+            var cb = arguments[0];
+            fetch('https://www.jlc-bbs.com/api/bbs/secret/update', {
+                method: 'GET',
+                credentials: 'include'
+            })
+            .then(function(r){return r.text();})
+            .then(function(d){cb(d);})
+            .catch(function(e){cb(JSON.stringify({error:e.toString()}));});
+            """
+            result = driver.execute_async_script(js_code, timeout=30)
+            if result:
+                try:
+                    data = json.loads(result)
+                    log(f"📡 secret/update 响应: {json.dumps(data, ensure_ascii=False)[:300]}")
+                    if data.get("success"):
+                        secret_key = data.get("data", {}).get("secretKey") or data.get("data", {}).get("secretkey")
+                        if secret_key:
+                            log(f"✅ 从 secret/update 接口获取 secretkey: {secret_key[:20]}...")
+                            return secret_key
+                except:
+                    log(f"📡 secret/update 返回非JSON: {result[:200]}")
+            return None
+        except Exception as e:
+            log(f"⚠ 调用 secret/update 异常: {e}")
+            return None
 
     def _trigger_api_request():
         """触发一个BBS API请求，让页面生成secretkey并加入请求头"""
@@ -439,13 +470,17 @@ def extract_secretkey(driver, max_retries=5):
             .then(function(d){cb(d);})
             .catch(function(e){cb(JSON.stringify({error:e.toString()}));});
             """
-            result = driver.execute_async_script(js_code)
+            result = driver.execute_async_script(js_code, timeout=30)
             log(f"📡 API请求触发完成")
             return result
         except Exception as e:
             log(f"⚠ 触发API请求异常: {e}")
             return None
 
+    direct_sk = _fetch_secretkey_directly()
+    if direct_sk:
+        return direct_sk
+    
     _trigger_api_request()
     time.sleep(2)
     
@@ -527,6 +562,73 @@ def extract_secretkey(driver, max_retries=5):
                 return sk
         except Exception as e:
             log(f"⚠ 从全局变量提取 secretkey 异常: {e}")
+
+        try:
+            vars_info = driver.execute_script("""
+                var result = [];
+                var keys = Object.keys(window);
+                for (var i = 0; i < keys.length; i++) {
+                    var key = keys[i];
+                    if (key.toLowerCase().includes('secret') || key.toLowerCase().includes('key') || key.toLowerCase().includes('token')) {
+                        var val = window[key];
+                        if (typeof val === 'string' && val.length > 10) {
+                            result.push(key + ': ' + val.substring(0, 30) + '...');
+                        } else if (typeof val === 'object' && val !== null) {
+                            result.push(key + ': ' + typeof val);
+                        }
+                    }
+                }
+                return result.join('; ');
+            """)
+            if vars_info:
+                log(f"📋 页面中相关变量: {vars_info}")
+        except Exception as e:
+            log(f"⚠ 检查页面变量异常: {e}")
+
+        try:
+            fetch_info = driver.execute_script("""
+                var result = {};
+                if (window.fetch && window.fetch.toString) {
+                    result.fetch_toString = window.fetch.toString().substring(0, 100);
+                }
+                if (window._fetch) {
+                    result.has_fetch_wrapper = true;
+                }
+                return JSON.stringify(result);
+            """)
+            if fetch_info:
+                log(f"📋 fetch 信息: {fetch_info}")
+        except Exception as e:
+            log(f"⚠ 检查 fetch 信息异常: {e}")
+
+        try:
+            resp_text = driver.execute_script("""
+                var cb = arguments[0];
+                fetch('https://www.jlc-bbs.com/api/bbs/signInRecordWeb/getSignInfo', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    credentials: 'include'
+                })
+                .then(function(r){
+                    var headers = {};
+                    r.headers.forEach(function(v, k){ headers[k] = v; });
+                    return r.text().then(function(body){ return {headers: headers, body: body}; });
+                })
+                .then(function(d){cb(JSON.stringify(d));})
+                .catch(function(e){cb(JSON.stringify({error:e.toString()}));});
+            """, timeout=30)
+            if resp_text:
+                try:
+                    data = json.loads(resp_text)
+                    log(f"📋 API响应头: {list(data.get('headers', {}).keys())}")
+                    body = data.get('body', '')
+                    if len(body) > 300:
+                        body = body[:300] + '...'
+                    log(f"📋 API响应体: {body}")
+                except:
+                    log(f"📋 API响应: {resp_text[:200]}")
+        except Exception as e:
+            log(f"⚠ 检查API响应异常: {e}")
 
         if attempt < max_retries - 1:
             log(f"⚠ 未提取到 secretkey，等待3秒后重试 ({attempt + 1}/{max_retries})...")
