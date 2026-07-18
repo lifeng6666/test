@@ -411,7 +411,7 @@ def perform_login_flow(driver, username, password, max_retries=3):
 
 # ======================== BBS 功能函数 ========================
 def extract_secretkey(driver, max_retries=5):
-    """从浏览器性能日志中提取 secretkey，增加诊断日志"""
+    """从浏览器性能日志中提取 secretkey，先触发API请求再提取"""
     
     def _check_headers(headers):
         if not headers:
@@ -424,8 +424,39 @@ def extract_secretkey(driver, max_retries=5):
             or headers.get("Secretkey")
         )
 
+    def _trigger_api_request():
+        """触发一个BBS API请求，让页面生成secretkey并加入请求头"""
+        try:
+            log("📡 触发BBS API请求以生成secretkey...")
+            js_code = """
+            var cb = arguments[0];
+            fetch('https://www.jlc-bbs.com/api/bbs/signInRecordWeb/getSignInfo', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                credentials: 'include'
+            })
+            .then(function(r){return r.text();})
+            .then(function(d){cb(d);})
+            .catch(function(e){cb(JSON.stringify({error:e.toString()}));});
+            """
+            result = driver.execute_async_script(js_code)
+            log(f"📡 API请求触发完成")
+            return result
+        except Exception as e:
+            log(f"⚠ 触发API请求异常: {e}")
+            return None
+
+    _trigger_api_request()
+    time.sleep(2)
+    
     for attempt in range(max_retries):
         bbs_requests_found = 0
+        api_requests_found = 0
+        
+        if attempt > 0:
+            _trigger_api_request()
+            time.sleep(2)
+            
         try:
             logs = driver.get_log("performance")
             log(f"📊 性能日志条目数: {len(logs)}")
@@ -438,21 +469,23 @@ def extract_secretkey(driver, max_retries=5):
                     if msg_method == "Network.requestWillBeSent":
                         req = message["message"]["params"]["request"]
                         url = req.get("url", "")
-                        if "jlc-bbs.com" in url:
-                            bbs_requests_found += 1
+                        if "jlc-bbs.com/api/" in url:
+                            api_requests_found += 1
                             headers = req.get("headers", {})
                             sk = _check_headers(headers)
                             if sk:
-                                log(f"✅ 从请求头提取 secretkey: {sk[:20]}...")
+                                log(f"✅ 从API请求头提取 secretkey: {sk[:20]}...")
                                 return sk
-                            if bbs_requests_found <= 3:
+                            if api_requests_found <= 3:
                                 header_keys = list(headers.keys())
-                                log(f"📋 jlc-bbs.com 请求 [{bbs_requests_found}]: {url[:80]}")
+                                log(f"📋 API请求 [{api_requests_found}]: {url[:100]}")
                                 log(f"📋 请求头关键字段: {header_keys}")
+                        elif "jlc-bbs.com" in url:
+                            bbs_requests_found += 1
                     elif msg_method == "Network.responseReceived":
                         resp = message["message"]["params"]["response"]
                         url = resp.get("url", "")
-                        if "jlc-bbs.com" in url:
+                        if "jlc-bbs.com/api/" in url:
                             headers = resp.get("requestHeaders", {})
                             sk = _check_headers(headers)
                             if sk:
@@ -461,10 +494,10 @@ def extract_secretkey(driver, max_retries=5):
                 except Exception:
                     continue
             
-            if bbs_requests_found == 0:
-                log("⚠ 性能日志中未找到 jlc-bbs.com 请求")
+            if api_requests_found == 0:
+                log(f"⚠ 性能日志中未找到 jlc-bbs.com API 请求 (页面请求: {bbs_requests_found}个)")
             else:
-                log(f"⚠ 找到 {bbs_requests_found} 个 jlc-bbs.com 请求，但未发现 secretkey")
+                log(f"⚠ 找到 {api_requests_found} 个 jlc-bbs.com API 请求，但未发现 secretkey")
                 
         except Exception as e:
             log(f"⚠ 从性能日志提取 secretkey 异常: {e}")
