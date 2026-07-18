@@ -17,7 +17,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
-# 导入 SM2 加密依赖
 try:
     from Utils import pwdEncrypt
     print("✅ 成功加载 SM2 加密依赖")
@@ -25,7 +24,6 @@ except ImportError:
     print("❌ 错误: 未找到 Utils.py，请确保同目录下存在该文件")
     sys.exit(1)
 
-# 尝试导入 serverchan3
 try:
     from serverchan_sdk import sc_send
     HAS_SERVERCHAN3 = True
@@ -63,7 +61,7 @@ def get_valid_proxy(account_proxy_fails):
         return None, account_proxy_fails
     apikey = os.getenv('DM_APIKEY')
     pwd = os.getenv('DM_PWD')
-    api_url = f"http://api.dmdaili.com/dmgetip.asp?apikey={apikey}&pwd={pwd}&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
+    api_url = f"http://need1.dmdaili.com:7771/dmgetip.asp?apikey={apikey}&pwd={pwd}&getnum=1&httptype=1&geshi=2&fenge=1&fengefu=&operate=all"
 
     while True:
         if account_proxy_fails >= 100:
@@ -95,7 +93,7 @@ def get_valid_proxy(account_proxy_fails):
                 port = p_info.get("port")
                 city = p_info.get("city", "未知位置")
                 proxy_str = f"http://{ip}:{port}"
-                log(f"🔗 成功获取到代理: {ip}:{port}[位置: {city}]，正在发送请求...")
+                log(f"🔗 成功获取到代理: {ip}:{port} [位置: {city}]，正在发送请求...")
                 return proxy_str, account_proxy_fails
             else:
                 log(f"⚠ 获取代理失败，API返回内容: {data}")
@@ -128,7 +126,6 @@ def create_chrome_driver(user_data_dir=None):
     chrome_options.add_argument("--disable-software-rasterizer")
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--window-size=1920,1080")
-    # 启用性能日志
     chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     if user_data_dir:
@@ -228,7 +225,6 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=18):
                                 pass
                             return match.group(1)
 
-            # 确保进程终止
             if process and process.poll() is None:
                 try:
                     process.kill()
@@ -488,7 +484,7 @@ def send_bbs_request(driver, url, method="POST", body=None, secretkey="", max_re
                     .catch(function(e){cb(JSON.stringify({error:e.toString()}));});
                     """
                     result = driver.execute_async_script(js_code, url, secretkey)
-            else:  # GET
+            else:
                 js_code = """
                 var url=arguments[0],sk=arguments[1],cb=arguments[2];
                 fetch(url,{method:'GET',headers:{'secretkey':sk},credentials:'include'})
@@ -707,19 +703,16 @@ def get_remaining_lottery_times(driver, max_retries=3):
     for attempt in range(max_retries):
         try:
             page_source = driver.page_source
-            # 匹配 "今日可抽奖次数：" 后面的数字
             match = re.search(r"今日可抽奖次数：\s*</span>\s*(\d+)\s*次", page_source)
             if match:
                 times = int(match.group(1))
                 log(f"🎰 剩余抽奖次数: {times}")
                 return {"success": True, "times": times}
-            # 尝试更宽松的匹配
             match2 = re.search(r"今日可抽奖次数[：:]\s*(\d+)\s*次", page_source)
             if match2:
                 times = int(match2.group(1))
                 log(f"🎰 剩余抽奖次数: {times}")
                 return {"success": True, "times": times}
-            # 尝试更宽松的匹配（纯文本）
             text = driver.find_element(By.TAG_NAME, "body").text
             match3 = re.search(r"今日可抽奖次数[：:]\s*(\d+)\s*次", text)
             if match3:
@@ -833,300 +826,257 @@ def get_koi_cards(driver, secretkey, max_retries=3):
 
 
 # ======================== 单账号处理 ========================
-def process_single_account(username, password, account_index, total_accounts, start_pwd_idx=0):
-    """处理单个账号的完整流程，包含密码重试及断点记忆"""
+def process_single_account(username, password, account_index, total_accounts):
+    """处理单个账号的完整流程"""
     global CONSECUTIVE_PROXY_ACCOUNT_FAILS, GLOBAL_PROXY_DISABLE
-    backup_passwords = []
-    
-    all_passwords = [password]
-    for bp in backup_passwords:
-        if bp != password:
-            all_passwords.append(bp)
-
     result = {
         "account_index": account_index,
-        "username": username,
         "password_error": False,
         "login_error": False,
         "has_error": False,
         "error_msg": None,
-        "last_pwd_idx": start_pwd_idx,
-        # 签到
         "sign_before_points": None,
         "sign_after_points": None,
-        "sign_status": None,       # success / already_signed / failed
+        "sign_status": None,       
         "sign_points_gained": None,
         "sign_error_msg": None,
-        # 抽奖
         "lottery_before_points": None,
         "lottery_after_points": None,
-        "lottery_status": None,     # success / skipped / failed
+        "lottery_status": None,     
         "lottery_skip_reason": None,
         "lottery_prizes": [],
         "lottery_error_msg": None,
-        # 最终
         "final_points": None,
         "final_points_error": None,
-        # 鲤鱼卡
         "koi_cards": None,
         "koi_cards_error": None,
     }
 
-    current_pwd_idx = start_pwd_idx
+    driver = None
+    user_data_dir = tempfile.mkdtemp()
+    
     account_proxy_state = {"fails": 0, "used_success": False}
 
-    while current_pwd_idx < len(all_passwords):
-        current_password = all_passwords[current_pwd_idx]
-        result["last_pwd_idx"] = current_pwd_idx
-        
-        driver = None
-        user_data_dir = tempfile.mkdtemp()
+    try:
+        log(f"🌐 启动浏览器 (账号 {account_index}/{total_accounts})...")
+        driver = create_chrome_driver(user_data_dir)
 
-        try:
-            log(f"🌐 启动浏览器 (账号 {account_index}/{total_accounts} - 尝试密码 {current_pwd_idx + 1}/{len(all_passwords)})...")
-            driver = create_chrome_driver(user_data_dir)
+        # ============ 登录阶段 ============
+        login_status = perform_login_flow(driver, username, password, max_retries=3)
 
-            # ============ 登录阶段 ============
-            login_status = perform_login_flow(driver, username, current_password, max_retries=3)
-
-            if login_status == "password_error":
-                log(f"❌ 密码错误: {current_password}，尝试下一个备用密码...")
-                current_pwd_idx += 1
-                continue
-
-            if login_status != "success":
-                result["login_error"] = True
-                result["has_error"] = True
-                result["error_msg"] = "登录失败"
-                return result
-
-            # ============ 签到阶段 ============
-            log("📄 打开签到页面...")
-            try:
-                driver.get("https://www.jlc-bbs.com/platform/sign")
-            except TimeoutException:
-                log("⚠ 签到页面加载超时，停止加载继续...")
-                driver.execute_script("window.stop();")
-
-            log("⏳ 等待10秒让页面完全加载...")
-            time.sleep(10)
-
-            # 提取 secretkey
-            secretkey = extract_secretkey(driver)
-            if not secretkey:
-                log("❌ 无法提取 secretkey，此账号流程异常")
-                result["has_error"] = True
-                result["error_msg"] = "secretkey 提取失败"
-                return result
-
-            # 验证BBS会话有效性，无效则尝试通过SSO重新建立
-            secretkey = validate_and_fix_bbs_session(
-                driver, secretkey, "https://www.jlc-bbs.com/platform/sign"
-            )
-            if not secretkey:
-                log("❌ BBS会话无法建立，此账号流程异常")
-                result["has_error"] = True
-                result["error_msg"] = "BBS会话无效"
-                return result
-
-            # 1. 获取签到前积分
-            log("📡 获取签到前积分...")
-            info_before = get_sign_info(driver, secretkey, label="签到前")
-            if info_before.get("success"):
-                result["sign_before_points"] = info_before["totalScore"]
-            else:
-                log(f"⚠ 获取签到前积分失败: {info_before.get('error', '未知')}")
-
-            # 2. 执行签到
-            log("📡 准备执行签到...")
-
-            sign_result = do_sign_in(driver, secretkey, account_proxy_state)
-            result["sign_status"] = sign_result["status"]
-
-            if sign_result["status"] == "success":
-                result["sign_points_gained"] = sign_result["taskScore"]
-                log(f"✅ 签到成功，获得 {sign_result['taskScore']} 积分")
-            elif sign_result["status"] == "already_signed":
-                log(f"ℹ {sign_result.get('message', '今天已经签到过了')}")
-            else:
-                result["sign_error_msg"] = sign_result.get("error", "未知原因")
-                result["has_error"] = True
-                log(f"❌ 签到失败: {result['sign_error_msg']}")
-
-            # 3. 获取签到后积分
-            log("📡 获取签到后积分...")
-            info_after = get_sign_info(driver, secretkey, label="签到后")
-            if info_after.get("success"):
-                result["sign_after_points"] = info_after["totalScore"]
-            else:
-                log(f"⚠ 获取签到后积分失败: {info_after.get('error', '未知')}")
-
-            # ============ 抽奖阶段 ============
-            log("📄 打开抽奖页面...")
-            try:
-                driver.get(
-                    "https://www.jlc-bbs.com/platform/points-paradise"
-                    "?type=index&id=ab69ff00332949328ba578c086d42141"
-                )
-            except TimeoutException:
-                log("⚠ 抽奖页面加载超时，停止加载继续...")
-                driver.execute_script("window.stop();")
-
-            log("⏳ 等待10秒让页面完全加载...")
-            time.sleep(10)
-
-            # 刷新 secretkey
-            new_sk = extract_secretkey(driver)
-            if new_sk:
-                secretkey = new_sk
-
-            # 检查当前积分
-            log("📡 检查当前积分...")
-            points_info = get_sign_info(driver, secretkey, label="当前")
-            current_points = 0
-            if points_info.get("success"):
-                current_points = points_info["totalScore"]
-                result["lottery_before_points"] = current_points
-            else:
-                log(f"⚠ 获取当前积分失败: {points_info.get('error', '未知')}")
-                # 尝试使用签到后积分作为备选
-                if result["sign_after_points"] is not None:
-                    current_points = result["sign_after_points"]
-                    result["lottery_before_points"] = current_points
-                    log(f"ℹ 使用签到后积分作为参考: {current_points}")
-
-            # 检查剩余抽奖次数
-            times_info = get_remaining_lottery_times(driver)
-            remaining_times = 0
-            if times_info.get("success"):
-                remaining_times = times_info["times"]
-            else:
-                log(f"⚠ 获取抽奖次数失败: {times_info.get('error', '未知')}")
-
-            # 判断是否抽奖
-            if remaining_times == 0:
-                result["lottery_status"] = "skipped"
-                result["lottery_skip_reason"] = "抽奖次数为0"
-                log("ℹ 抽奖次数为0，跳过抽奖")
-            elif current_points < 10:
-                result["lottery_status"] = "skipped"
-                result["lottery_skip_reason"] = f"积分不足10（当前{current_points}）"
-                log(f"ℹ 积分不足10（当前{current_points}），跳过抽奖")
-            else:
-                # 执行抽奖循环
-                log("🎰 开始准备抽奖...")
-
-                result["lottery_status"] = "success"
-                lottery_count = 0
-
-                while True:
-                    lottery_result = do_lottery(driver, secretkey, account_proxy_state)
-
-                    if lottery_result["status"] == "success":
-                        lottery_count += 1
-                        prize_name = lottery_result["name"]
-                        result["lottery_prizes"].append(prize_name)
-                        log(f"🎉 抽奖{lottery_count}: {prize_name}")
-                        time.sleep(1)
-                    elif lottery_result["status"] == "no_times":
-                        log(f"ℹ {lottery_result.get('message', '抽奖次数已用完')}")
-                        break
-                    elif lottery_result["status"] == "no_points":
-                        log(f"ℹ {lottery_result.get('message', '积分不足')}")
-                        break
-                    else:
-                        result["lottery_error_msg"] = lottery_result.get("error", "未知原因")
-                        result["has_error"] = True
-                        log(f"❌ 抽奖失败: {result['lottery_error_msg']}")
-                        break
-
-                if lottery_count > 0:
-                    log(f"🎰 共完成 {lottery_count} 次抽奖")
-
-            # 获取抽奖后积分
-            log("📡 获取最终积分...")
-            final_info = get_sign_info(driver, secretkey, label="最终")
-            if final_info.get("success"):
-                result["final_points"] = final_info["totalScore"]
-                result["lottery_after_points"] = final_info["totalScore"]
-            else:
-                result["final_points_error"] = final_info.get("error", "未知")
-                log(f"⚠ 获取最终积分失败: {result['final_points_error']}")
-                # 尝试使用之前的积分信息
-                if result["sign_after_points"] is not None and not result["lottery_prizes"]:
-                    result["final_points"] = result["sign_after_points"]
-
-            # ============ 鲤鱼卡 ============
-            log("📡 检查鲤鱼卡数量...")
-            koi_result = get_koi_cards(driver, secretkey)
-            if koi_result.get("success"):
-                result["koi_cards"] = koi_result["count"]
-                log(f"🐟 鲤鱼卡数量: {result['koi_cards']}")
-            else:
-                result["koi_cards_error"] = koi_result.get("error", "未知")
-                log(f"⚠ 获取鲤鱼卡数量失败: {result['koi_cards_error']}")
-
-            log(f"✅ 账号 {account_index} 处理完成")
-            return result
-
-        except Exception as e:
-            log(f"❌ 账号 {account_index} 处理过程中发生异常: {e}")
+        if login_status == "password_error":
+            result["password_error"] = True
             result["has_error"] = True
-            result["error_msg"] = str(e)
+            result["error_msg"] = "账号或密码不正确"
+            log(f"❌ 账号 {account_index} 密码错误，跳过此账号")
             return result
-            
-        finally:
-            if account_proxy_state["fails"] >= 100 and not account_proxy_state["used_success"]:
-                CONSECUTIVE_PROXY_ACCOUNT_FAILS += 1
-                log(f"⚠ 该账号未能成功挂上任何可用代理，当前连续获取代理失败账号数: {CONSECUTIVE_PROXY_ACCOUNT_FAILS}")
-                if CONSECUTIVE_PROXY_ACCOUNT_FAILS >= 5 and not GLOBAL_PROXY_DISABLE:
-                    GLOBAL_PROXY_DISABLE = True
-                    log("❌ 连续5个账号获取代理失败，已触发保护机制，后续所有账号将全部放弃代理使用本地IP")
-            else:
-                if account_proxy_state["used_success"]:
-                    CONSECUTIVE_PROXY_ACCOUNT_FAILS = 0
-                    
-            if driver:
-                try:
-                    driver.quit()
-                    log(f"🔒 浏览器已关闭 (账号 {account_index})")
-                except Exception:
-                    pass
-            if os.path.exists(user_data_dir):
-                try:
-                    shutil.rmtree(user_data_dir, ignore_errors=True)
-                except Exception:
-                    pass
 
-    # 如果所有候选密码均验证失败
-    result["password_error"] = True
-    result["has_error"] = True
-    result["error_msg"] = "所有候选密码均验证失败"
-    log(f"❌ 账号 {account_index} 所有候选密码均提示错误，跳过此账号")
+        if login_status != "success":
+            result["login_error"] = True
+            result["has_error"] = True
+            result["error_msg"] = "登录失败"
+            return result
+
+        # ============ 签到阶段 ============
+        log("📄 打开签到页面...")
+        try:
+            driver.get("https://www.jlc-bbs.com/platform/sign")
+        except TimeoutException:
+            log("⚠ 签到页面加载超时，停止加载继续...")
+            driver.execute_script("window.stop();")
+
+        log("⏳ 等待10秒让页面完全加载...")
+        time.sleep(10)
+
+        secretkey = extract_secretkey(driver)
+        if not secretkey:
+            log("❌ 无法提取 secretkey，此账号流程异常")
+            result["has_error"] = True
+            result["error_msg"] = "secretkey 提取失败"
+            return result
+
+        secretkey = validate_and_fix_bbs_session(
+            driver, secretkey, "https://www.jlc-bbs.com/platform/sign"
+        )
+        if not secretkey:
+            log("❌ BBS会话无法建立，此账号流程异常")
+            result["has_error"] = True
+            result["error_msg"] = "BBS会话无效"
+            return result
+
+        log("📡 获取签到前积分...")
+        info_before = get_sign_info(driver, secretkey, label="签到前")
+        if info_before.get("success"):
+            result["sign_before_points"] = info_before["totalScore"]
+        else:
+            log(f"⚠ 获取签到前积分失败: {info_before.get('error', '未知')}")
+
+        log("📡 准备执行签到...")
+        
+        sign_result = do_sign_in(driver, secretkey, account_proxy_state)
+        result["sign_status"] = sign_result["status"]
+
+        if sign_result["status"] == "success":
+            result["sign_points_gained"] = sign_result["taskScore"]
+            log(f"✅ 签到成功，获得 {sign_result['taskScore']} 积分")
+        elif sign_result["status"] == "already_signed":
+            log(f"ℹ {sign_result.get('message', '今天已经签到过了')}")
+        else:
+            result["sign_error_msg"] = sign_result.get("error", "未知原因")
+            result["has_error"] = True
+            log(f"❌ 签到失败: {result['sign_error_msg']}")
+
+        log("📡 获取签到后积分...")
+        info_after = get_sign_info(driver, secretkey, label="签到后")
+        if info_after.get("success"):
+            result["sign_after_points"] = info_after["totalScore"]
+        else:
+            log(f"⚠ 获取签到后积分失败: {info_after.get('error', '未知')}")
+
+        # ============ 抽奖阶段 ============
+        log("📄 打开抽奖页面...")
+        try:
+            driver.get(
+                "https://www.jlc-bbs.com/platform/points-paradise"
+                "?type=index&id=ab69ff00332949328ba578c086d42141"
+            )
+        except TimeoutException:
+            log("⚠ 抽奖页面加载超时，停止加载继续...")
+            driver.execute_script("window.stop();")
+
+        log("⏳ 等待10秒让页面完全加载...")
+        time.sleep(10)
+
+        new_sk = extract_secretkey(driver)
+        if new_sk:
+            secretkey = new_sk
+
+        log("📡 检查当前积分...")
+        points_info = get_sign_info(driver, secretkey, label="当前")
+        current_points = 0
+        if points_info.get("success"):
+            current_points = points_info["totalScore"]
+            result["lottery_before_points"] = current_points
+        else:
+            log(f"⚠ 获取当前积分失败: {points_info.get('error', '未知')}")
+            if result["sign_after_points"] is not None:
+                current_points = result["sign_after_points"]
+                result["lottery_before_points"] = current_points
+                log(f"ℹ 使用签到后积分作为参考: {current_points}")
+
+        times_info = get_remaining_lottery_times(driver)
+        remaining_times = 0
+        if times_info.get("success"):
+            remaining_times = times_info["times"]
+        else:
+            log(f"⚠ 获取抽奖次数失败: {times_info.get('error', '未知')}")
+
+        if remaining_times == 0:
+            result["lottery_status"] = "skipped"
+            result["lottery_skip_reason"] = "抽奖次数为0"
+            log("ℹ 抽奖次数为0，跳过抽奖")
+        elif current_points < 10:
+            result["lottery_status"] = "skipped"
+            result["lottery_skip_reason"] = f"积分不足10（当前{current_points}）"
+            log(f"ℹ 积分不足10（当前{current_points}），跳过抽奖")
+        else:
+            log("🎰 开始准备抽奖...")
+            result["lottery_status"] = "success"
+            lottery_count = 0
+
+            while True:
+                lottery_result = do_lottery(driver, secretkey, account_proxy_state)
+
+                if lottery_result["status"] == "success":
+                    lottery_count += 1
+                    prize_name = lottery_result["name"]
+                    result["lottery_prizes"].append(prize_name)
+                    log(f"🎉 抽奖{lottery_count}: {prize_name}")
+                    time.sleep(1)
+                elif lottery_result["status"] == "no_times":
+                    log(f"ℹ {lottery_result.get('message', '抽奖次数已用完')}")
+                    break
+                elif lottery_result["status"] == "no_points":
+                    log(f"ℹ {lottery_result.get('message', '积分不足')}")
+                    break
+                else:
+                    result["lottery_error_msg"] = lottery_result.get("error", "未知原因")
+                    result["has_error"] = True
+                    log(f"❌ 抽奖失败: {result['lottery_error_msg']}")
+                    break
+
+            if lottery_count > 0:
+                log(f"🎰 共完成 {lottery_count} 次抽奖")
+
+        log("📡 获取最终积分...")
+        final_info = get_sign_info(driver, secretkey, label="最终")
+        if final_info.get("success"):
+            result["final_points"] = final_info["totalScore"]
+            result["lottery_after_points"] = final_info["totalScore"]
+        else:
+            result["final_points_error"] = final_info.get("error", "未知")
+            log(f"⚠ 获取最终积分失败: {result['final_points_error']}")
+            if result["sign_after_points"] is not None and not result["lottery_prizes"]:
+                result["final_points"] = result["sign_after_points"]
+
+        # ============ 鲤鱼卡 ============
+        log("📡 检查鲤鱼卡数量...")
+        koi_result = get_koi_cards(driver, secretkey)
+        if koi_result.get("success"):
+            result["koi_cards"] = koi_result["count"]
+            log(f"🐟 鲤鱼卡数量: {result['koi_cards']}")
+        else:
+            result["koi_cards_error"] = koi_result.get("error", "未知")
+            log(f"⚠ 获取鲤鱼卡数量失败: {result['koi_cards_error']}")
+
+        log(f"✅ 账号 {account_index} 处理完成")
+
+    except Exception as e:
+        log(f"❌ 账号 {account_index} 处理过程中发生异常: {e}")
+        result["has_error"] = True
+        result["error_msg"] = str(e)
+    finally:
+        # 统计代理异常逻辑
+        if account_proxy_state["fails"] >= 100 and not account_proxy_state["used_success"]:
+            CONSECUTIVE_PROXY_ACCOUNT_FAILS += 1
+            log(f"⚠ 该账号未能成功挂上任何可用代理，当前连续获取代理失败账号数: {CONSECUTIVE_PROXY_ACCOUNT_FAILS}")
+            if CONSECUTIVE_PROXY_ACCOUNT_FAILS >= 5 and not GLOBAL_PROXY_DISABLE:
+                GLOBAL_PROXY_DISABLE = True
+                log("❌ 连续5个账号获取代理失败，已触发保护机制，后续所有账号将全部放弃代理使用本地IP")
+        else:
+            if account_proxy_state["used_success"]:
+                CONSECUTIVE_PROXY_ACCOUNT_FAILS = 0
+                
+        if driver:
+            try:
+                driver.quit()
+                log(f"🔒 浏览器已关闭 (账号 {account_index})")
+            except Exception:
+                pass
+        if os.path.exists(user_data_dir):
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+
     return result
+
 
 def process_account_with_retry(username, password, account_index, total_accounts, max_retries=2):
     """带重试的账号处理"""
-    last_pwd_idx = 0
     for attempt in range(max_retries + 1):
         if attempt > 0:
             log(f"🔄 账号 {account_index} 第 {attempt} 次重试...")
             time.sleep(5)
 
-        result = process_single_account(username, password, account_index, total_accounts, start_pwd_idx=last_pwd_idx)
-        
-        if "last_pwd_idx" in result:
-            last_pwd_idx = result["last_pwd_idx"]
+        result = process_single_account(username, password, account_index, total_accounts)
 
-        # 密码错误不重试 (所有备用密码均试过)
         if result.get("password_error"):
             return result
 
-        # 没有错误就返回
         if not result.get("has_error"):
             return result
 
-        # 如果还有重试机会
         if attempt < max_retries:
             log(f"⚠ 账号 {account_index} 执行异常，准备重试 (原因: {result.get('error_msg', '未知')})")
         else:
@@ -1134,18 +1084,17 @@ def process_account_with_retry(username, password, account_index, total_accounts
 
     return result
 
+
 # ======================== 推送相关========================
-def push_summary(push_text, title=None):
+def push_summary(push_text):
     """推送总结日志到各平台"""
     if not push_text:
         return
 
-    if title is None:
-        title = "嘉立创BBS签到&抽奖总结"
+    title = "嘉立创BBS签到&抽奖总结"
     full_text = f"{title}\n{push_text}"
     pushed_any = False
 
-    # Telegram
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
     tg_chat = os.getenv("TELEGRAM_CHAT_ID")
     if tg_token and tg_chat:
@@ -1160,17 +1109,14 @@ def push_summary(push_text, title=None):
             log(f"Telegram-推送异常: {e}")
         pushed_any = True
 
-    # 企业微信
     wechat_key = os.getenv("WECHAT_WEBHOOK_KEY")
     if wechat_key:
         try:
             wechat_url = wechat_key if wechat_key.startswith("https://") else f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={wechat_key}"
             resp = requests.post(wechat_url, json={"msgtype": "text", "text": {"content": full_text}}, timeout=15)
-            # 检查状态码
             if resp.status_code != 200:
                 log(f"企业微信-推送失败 (HTTP {resp.status_code}): {resp.text}")
             else:
-                # 解析 JSON
                 try:
                     resp_json = resp.json()
                     errcode = resp_json.get("errcode")
@@ -1185,7 +1131,6 @@ def push_summary(push_text, title=None):
             log(f"企业微信-推送异常: {e}")
         pushed_any = True
 
-    # 钉钉
     dingtalk = os.getenv("DINGTALK_WEBHOOK")
     if dingtalk:
         try:
@@ -1208,7 +1153,6 @@ def push_summary(push_text, title=None):
             log(f"钉钉-推送异常: {e}")
         pushed_any = True
 
-    # PushPlus
     pp_token = os.getenv("PUSHPLUS_TOKEN")
     if pp_token:
         try:
@@ -1221,7 +1165,6 @@ def push_summary(push_text, title=None):
             log(f"PushPlus-推送异常: {e}")
         pushed_any = True
 
-    # Server酱
     sc_key = os.getenv("SERVERCHAN_SCKEY")
     if sc_key:
         try:
@@ -1234,7 +1177,6 @@ def push_summary(push_text, title=None):
             log(f"Server酱-推送异常: {e}")
         pushed_any = True
 
-    # Server酱3
     sc3_key = os.getenv("SERVERCHAN3_SCKEY")
     if sc3_key and HAS_SERVERCHAN3:
         try:
@@ -1247,7 +1189,6 @@ def push_summary(push_text, title=None):
             log(f"Server酱3-推送异常: {e}")
         pushed_any = True
 
-    # 酷推
     cp_skey = os.getenv("COOLPUSH_SKEY")
     if cp_skey:
         try:
@@ -1260,7 +1201,6 @@ def push_summary(push_text, title=None):
             log(f"酷推-推送异常: {e}")
         pushed_any = True
 
-    # 自定义 API
     custom = os.getenv("CUSTOM_WEBHOOK")
     if custom:
         try:
@@ -1276,6 +1216,7 @@ def push_summary(push_text, title=None):
     if not pushed_any:
         log("ℹ 未配置任何推送链接，跳过实际推送")
 
+
 def has_any_push_config():
     """检查是否配置了任何推送渠道"""
     keys = [
@@ -1285,30 +1226,49 @@ def has_any_push_config():
     ]
     return any(os.getenv(k) for k in keys)
 
+
 # ======================== 主函数 ========================
 def main():
     global in_summary
 
-    if len(sys.argv) < 3:
-        print("用法: python bbs_sign.py 账号1,账号2... 密码1,密码2... [失败退出标志] [账号组编号]")
-        print("示例: python bbs_sign.py user1,user2 pwd1,pwd2")
-        print("示例: python bbs_sign.py user1,user2 pwd1,pwd2 true")
-        print("示例: python bbs_sign.py user1,user2 pwd1,pwd2 true 4")
+    if len(sys.argv) < 2:
+        print("用法: python bbs_sign.py [失败退出标志] [账号组编号]")
+        print("失败退出标志: 不传或任意值-关闭, true-开启(任意账号签到失败时返回非零退出码)")
         print("账号组编号: 只能输入数字，输入其他值则忽略")
         sys.exit(1)
 
-    usernames = [u.strip() for u in sys.argv[1].split(",") if u.strip()]
-    passwords = [p.strip() for p in sys.argv[2].split(",") if p.strip()]
+    # usernames = [u.strip() for u in sys.argv[1].split(",") if u.strip()]
+    # passwords = [p.strip() for p in sys.argv[2].split(",") if p.strip()]
 
-    fail_exit = False
-    if len(sys.argv) >= 4:
-        fail_exit = sys.argv[3].lower() == "true"
 
-    # 解析第4个参数（账号组编号），只接受纯数字，其他值忽略
-    account_group = None
-    if len(sys.argv) >= 5:
-        if sys.argv[4].isdigit():
-            account_group = sys.argv[4]
+    fail_exit = (sys.argv[1].lower() == "true")
+    log(f"失败退出功能: {'开启' if enable_failure_exit else '关闭'}")
+
+    account_group = int(sys.argv[2]) if sys.argv[2].isdigit() else None
+
+    rawAccounts = os.getenv('JLC_BBS_ACCOUNT', '')
+    accounts = []
+    
+    # 清洗数据
+    for line in rawAccounts.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#') or ':' not in line:
+            continue
+        try:
+            parts = line.split(':', 1)
+            username = parts[0].strip()
+            password = parts[1].strip()
+            if username and password:
+                accounts.append((username, password))
+        except:
+            continue
+
+    batch = accounts[(account_group-1)*50 : account_group*50]
+    argv1 = ",".join([x[0] for x in batch])
+    argv2 = ",".join([x[1] for x in batch])
+
+    usernames = [u.strip() for u in argv1.split(',') if u.strip()]
+    passwords = [p.strip() for p in argv2.split(',') if p.strip()]
 
     if len(usernames) != len(passwords):
         log("❌ 错误: 账号和密码数量不匹配!")
@@ -1320,7 +1280,7 @@ def main():
     all_results = []
 
     for i, (username, password) in enumerate(zip(usernames, passwords), 1):
-        log(f"{'='*50}", show_time=False)
+        log(f"\n{'='*50}", show_time=False)
         log(f"开始处理账号 {i}/{total}", show_time=False)
         log(f"{'='*50}", show_time=False)
 
@@ -1332,40 +1292,35 @@ def main():
             time.sleep(5)
 
     # ======================== 总结输出 ========================
+    in_summary = True
 
     log("", show_time=False)
     log("=" * 60, show_time=False)
-    if account_group is not None:
-        log(f"📊嘉立创BBS签到 & 抽奖 账号组{account_group}结果总结", show_time=False)
-    else:
-        log("📊 嘉立创BBS签到 & 抽奖 结果总结", show_time=False)
+    log("📊 嘉立创BBS签到 & 抽奖 结果总结", show_time=False)
     log("=" * 60, show_time=False)
 
     push_reasons = []
     any_error = False
 
     for res in all_results:
-        uname = res.get("username", res["account_index"])
+        idx = res["account_index"]
         log("--------------------------------------------------", show_time=False)
-        log(f"账号{uname}:", show_time=False)
+        log(f"账号{idx}:", show_time=False)
 
-        # === 密码错误 ===
         if res.get("password_error"):
             log("├── 状态: ❌ 账号或密码错误，已跳过", show_time=False)
             any_error = True
-            push_reasons.append(f"账号{uname}密码错误")
+            push_reasons.append(f"账号{idx}密码错误")
             log("--------------------------------------------------", show_time=False)
             continue
 
-        # === 登录失败 ===
         if res.get("login_error"):
             log(f"├── 状态: ❌ 登录失败 ({res.get('error_msg', '未知')})", show_time=False)
             any_error = True
-            push_reasons.append(f"账号{uname}登录异常")
+            push_reasons.append(f"账号{idx}登录异常")
             log("--------------------------------------------------", show_time=False)
             continue
 
-        # === 签到积分变化 ===
         sign_status = res.get("sign_status")
         before_p = res.get("sign_before_points")
         after_p = res.get("sign_after_points")
@@ -1383,20 +1338,19 @@ def main():
         elif sign_status == "failed":
             sign_str = f"签到失败，原因: {res.get('sign_error_msg', '未知')}"
             any_error = True
-            push_reasons.append(f"账号{uname}签到失败")
+            push_reasons.append(f"账号{idx}签到失败")
         elif res.get("has_error") and res.get("error_msg"):
             sign_str = f"运行异常: {res.get('error_msg')}"
             any_error = True
-            push_reasons.append(f"账号{uname}运行失败")
+            push_reasons.append(f"账号{idx}运行失败")
         else:
             sign_str = "未执行"
             if res.get("has_error"):
                 any_error = True
-                push_reasons.append(f"账号{uname}运行失败")
+                push_reasons.append(f"账号{idx}运行失败")
 
         log(f"├── 签到积分变化: {sign_str}", show_time=False)
 
-        # === 抽奖积分变化 ===
         lottery_status = res.get("lottery_status")
         lot_before = res.get("lottery_before_points")
         lot_after = res.get("lottery_after_points")
@@ -1411,17 +1365,15 @@ def main():
             lottery_str = f"未抽奖，原因: {res.get('lottery_skip_reason', '未知')}"
         elif lottery_status == "failed":
             lottery_str = f"抽奖失败，原因: {res.get('lottery_error_msg', '未知')}"
-            # 抽奖失败如果不是积分不足/次数用尽，算异常
             err_msg = res.get("lottery_error_msg", "")
             if "积分" not in err_msg and "次数" not in err_msg:
                 any_error = True
-                push_reasons.append(f"账号{uname}抽奖异常")
+                push_reasons.append(f"账号{idx}抽奖异常")
         else:
             lottery_str = "未执行"
 
         log(f"├── 抽奖积分变化: {lottery_str}", show_time=False)
 
-        # === 最终积分 ===
         final_p = res.get("final_points")
         if final_p is not None:
             log(f"├── 最终积分: {final_p}", show_time=False)
@@ -1429,7 +1381,6 @@ def main():
             err = res.get("final_points_error", "未知")
             log(f"├── 最终积分: 获取失败，原因: {err}", show_time=False)
 
-        # === 鲤鱼卡 ===
         koi = res.get("koi_cards")
         if koi is not None:
             log(f"├── 鲤鱼卡数量: {koi}", show_time=False)
@@ -1437,53 +1388,38 @@ def main():
             err = res.get("koi_cards_error", "未知")
             log(f"├── 鲤鱼卡数量: 获取失败，原因: {err}", show_time=False)
 
-        # === 抽奖奖品 ===
         for pi, prize in enumerate(res.get("lottery_prizes", []), 1):
             log(f"├── 抽奖{pi}奖品: {prize}", show_time=False)
-            # 检查是否中了非积分且非鲤鱼卡的奖品
             if "积分" not in prize and "鲤鱼卡" not in prize:
-                push_reasons.append(f"账号{uname}中奖{prize}")
+                push_reasons.append(f"账号{idx}中奖{prize}")
 
         log("--------------------------------------------------", show_time=False)
 
-    # === 整体异常判断（处理 has_error 但前面可能未捕获的情况）===
     for res in all_results:
-        uname = res.get("username", res["account_index"])
+        idx = res["account_index"]
         if res.get("has_error") and not res.get("password_error") and not res.get("login_error"):
-            reason_str = f"账号{uname}运行失败"
-            if reason_str not in push_reasons and f"账号{uname}签到失败" not in push_reasons and f"账号{uname}抽奖异常" not in push_reasons:
+            reason_str = f"账号{idx}运行失败"
+            if reason_str not in push_reasons and f"账号{idx}签到失败" not in push_reasons and f"账号{idx}抽奖异常" not in push_reasons:
                 any_error = True
                 push_reasons.append(reason_str)
 
-    # === 推送决策 ===
-    # 去重
     push_reasons = list(dict.fromkeys(push_reasons))
     should_push = len(push_reasons) > 0
 
     if should_push:
         reason_text = "/".join(push_reasons)
-        in_summary = True  # 启用总结收集（推送内容从此处开始）
-        if account_group is not None:
-            log(f"账号组{account_group}:本次运行推送，推送原因: {reason_text}", show_time=False)
-        else:
-            log(f"本次运行推送，推送原因: {reason_text}", show_time=False)
+        log(f"本次运行推送，推送原因: {reason_text}", show_time=False)
 
         push_text = "\n".join(summary_logs)
-        # 确定推送标题
-        if account_group is not None:
-            push_title = f"📊嘉立创BBS签到 & 抽奖 账号组{account_group}结果总结"
-        else:
-            push_title = "嘉立创BBS签到&抽奖总结"
         if has_any_push_config():
-            push_summary(push_text, push_title)
+            push_summary(push_text)
         else:
-            log("未配置任何推送链接，跳过实际推送", show_time=False)
+            log("ℹ 未配置任何推送链接，跳过实际推送", show_time=False)
     else:
         log("本次运行不推送，无推送条件命中", show_time=False)
 
     in_summary = False
 
-    # === 退出码 ===
     has_any_account_error = any(
         r.get("has_error") for r in all_results
     )
@@ -1497,6 +1433,7 @@ def main():
         else:
             log("✅ 程序正常退出")
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

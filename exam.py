@@ -14,9 +14,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException, TimeoutException
+from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException, TimeoutException, WebDriverException
 
-from Utils import pwdEncrypt
+# 导入SM2加密方法
+try:
+    from Utils import pwdEncrypt
+    print("✅ 成功加载 SM2 加密依赖")
+except ImportError:
+    print("❌ 错误: 未找到 Utils.py ，请确保同目录下存在该文件")
+    sys.exit(1)
+
 
 def log(msg, show_time=True):
     """带时间戳的日志输出"""
@@ -50,13 +57,10 @@ def create_chrome_driver(user_data_dir=None):
     
     if user_data_dir:
         chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-    else:
-        # 如果没传，创建一个临时的（但不推荐，因为不好清理）
-        chrome_options.add_argument(f"--user-data-dir={tempfile.mkdtemp()}")
     
     driver = webdriver.Chrome(options=chrome_options)
     
-    # 设置页面加载超时为60秒，防止卡死在默认的300秒
+    # 默认是300秒，太长了，改为60秒。如果60秒还没加载完，大概率是卡死了，报错重试。
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(60)
     
@@ -120,7 +124,7 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=18):
             while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    # 情况1：超时强制停止，需要打印日志
+                    # 超时强制停止，需要打印日志
                     log(f"⏰ 登录脚本超过 {timeout_seconds} 秒未完成，强制终止...")
                     try:
                         process.kill()
@@ -199,7 +203,7 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=18):
                 log(f"⚠ 未获取到CaptchaTicket，等待5秒后第 {attempt + 2} 次重试...")
                 time.sleep(5)
     
-    # 18次都失败，程序退出
+    # 失败退出
     log("❌ 登录脚本存在异常")
     sys.exit(1)
 
@@ -294,9 +298,9 @@ def verify_login_on_member_page(driver, max_retries=3):
             except TimeoutException:
                 log("⚠ 验证页面加载超时，停止加载并尝试检查内容...")
                 driver.execute_script("window.stop();")
-
+            
             WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            time.sleep(5)
+            time.sleep(3)
             page_source = driver.page_source
             if "客编" in page_source or "customerCode" in page_source:
                 log(f"✅ 验证登录成功")
@@ -359,6 +363,7 @@ def extract_real_exam_url(driver, retry_attempt=0):
             pass
     except Exception as e:
         log(f"⚠ 打开页面异常: {str(e)[:100]}")
+        # 这里不返回None，尝试继续，因为可能虽然报错但部分内容已加载
     
     wait_time = 15
     log("⏳ 等待页面及 Iframe 加载 (15s)...")
@@ -369,12 +374,13 @@ def extract_real_exam_url(driver, retry_attempt=0):
             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         except:
             pass
+            
         time.sleep(3)
         
         # 尝试切换到iframe
         if switch_to_exam_iframe(driver, wait_time=wait_time):
             try:
-                # 关键优化: 等待按钮出现并且可点击,确保内容完全加载
+                # 优化: 等待按钮出现并且可点击,确保内容完全加载
                 WebDriverWait(driver, wait_time).until(
                     EC.element_to_be_clickable((By.XPATH, '//*[@id="startExamBtn"]'))
                 )
@@ -435,6 +441,7 @@ def handle_possible_alerts(driver):
     except Exception:
         return False
 
+
 def inject_exam_js(driver):
     """读取并注入 exam.js"""
     log("💉 正在注入 exam.js 答题脚本...")
@@ -472,7 +479,7 @@ def wait_for_exam_completion_with_js(driver, timeout_seconds=180):
             
             # 定期日志
             if time.time() - last_log_time > 15:
-                log(f"⏳ 当前页面: {current_url.split('?')[0]}")
+                log(f"ℹ 当前页面: {current_url.split('?')[0]}")
                 last_log_time = time.time()
             
             # 1. 成功跳转至结果页
@@ -539,8 +546,8 @@ def perform_exam_process(driver, max_retries=3):
         log(f"📝 开始答题流程 (第 {exam_attempt + 1}/{max_retries} 次尝试)...")
         
         try:
-            # 步骤 1: 提取链接 (内部重试5次)
-            # 这里是针对页面加载超时/资源卡住的专门重试
+            # 步骤 1: 提取链接
+            # 这里重试只是为了应对加载超时，不消耗外层的考试机会
             real_exam_url = None
             extraction_max_retries = 5
             
@@ -573,11 +580,10 @@ def perform_exam_process(driver, max_retries=3):
             score = get_exam_score(driver)
             
             if score is not None:
-                # 只有及格才算真正成功返回
                 if score >= 60:
                     return True, score
                 else:
-                    # 分数不及格处理逻辑
+                    # 分数不及格处理
                     if exam_attempt < max_retries - 1:
                         log(f"⚠ 分数 {score} 不及格，正在准备补考... (剩余机会: {max_retries - 1 - exam_attempt})")
                         time.sleep(3)
@@ -604,7 +610,6 @@ def perform_exam_process(driver, max_retries=3):
 def perform_login_flow(driver, username, password, max_retries=3):
     """
     执行完整的登录流程（包括Session初始化、登录、验证）
-    不在此处重建浏览器，只负责逻辑执行
     """
     session_fail_count = 0
     
@@ -613,7 +618,6 @@ def perform_login_flow(driver, username, password, max_retries=3):
         
         try:
             # 步骤 1: 打开登录页
-            # 增加超时处理
             try:
                 driver.get("https://passport.jlc.com")
             except TimeoutException:
@@ -658,7 +662,8 @@ def perform_login_flow(driver, username, password, max_retries=3):
             if login_attempt < max_retries - 1:
                 log(f"⏳ 重试登录流程...")
                 time.sleep(3)
-                # 不在这里重建 driver，依靠外层循环
+                # 这里不再销毁 driver，而是复用，依靠外层来控制 driver 的生命周期
+                # 除非外层在失败后选择重建 driver
             else:
                 log(f"❌ 登录流程已达最大重试次数")
                 return 'login_failed'
@@ -667,15 +672,7 @@ def perform_login_flow(driver, username, password, max_retries=3):
 
 
 def process_single_account(username, password, account_index, total_accounts):
-    """处理单个账号 - 支持多密码重试和断点记忆"""
-    backup_passwords = []
-    
-    # 构建密码候选列表（去重并保持顺序，优先尝试传入的密码）
-    all_passwords = [password]
-    for bp in backup_passwords:
-        if bp != password:
-            all_passwords.append(bp)
-    
+    """处理单个账号 - 重构后的流程"""
     result = {
         'account_index': account_index, 
         'status': '未知', 
@@ -685,113 +682,112 @@ def process_single_account(username, password, account_index, total_accounts):
         'failure_reason': None
     }
     
-    current_pwd_idx = 0
-    max_session_retries = 3  # 定义全流程重试的最大次数（针对非密码错误的异常）
+    driver = None
+    user_data_dir = tempfile.mkdtemp()
     
-    # 外层循环：处理非密码错误导致的“全流程重试”
-    for session_attempt in range(max_session_retries):
+    try:
+        log(f"🌐 启动浏览器 (账号 {account_index})...")
+        driver = create_chrome_driver(user_data_dir)
         
-        # 内层循环：遍历密码列表
-        while current_pwd_idx < len(all_passwords):
-            current_password = all_passwords[current_pwd_idx]
-            log(f"🌐 启动浏览器 (账号 {account_index} - 尝试密码 {current_pwd_idx + 1}/{len(all_passwords)})...")
-            
-            # 显式管理临时目录
-            user_data_dir = tempfile.mkdtemp()
-            driver = None
-            
-            try:
-                driver = create_chrome_driver(user_data_dir)
-            
-                # --- 阶段 1: 登录流程 ---
-                # perform_login_flow 内部已有3次重试，如果它返回 login_failed，说明环境恶劣
-                login_status = perform_login_flow(driver, username, current_password, max_retries=3)
-                
-                if login_status == 'password_error':
-                    log(f"❌ 密码错误: {current_password}，尝试下一个备用密码...")
-                    # 明确证明密码错误，永久跳过此密码
-                    current_pwd_idx += 1
-                    driver.quit()
-                    shutil.rmtree(user_data_dir, ignore_errors=True)
-                    continue  # 立即进入下一次内层循环尝试新密码
-                
-                if login_status != 'success':
-                    # 登录失败，但不是明确的密码错误（如网络问题、验证码问题等）
-                    # 正常进入全流程重试，记忆密码进度（即不增加 current_pwd_idx）
-                    log(f"⚠ 登录流程异常 (非密码错误)，准备重新开始全流程...")
-                    # 跳出内层循环，让外层循环 (session_attempt) 触发重试
-                    # 此时 current_pwd_idx 未改变，下次重试仍用当前密码
-                    driver.quit()
-                    shutil.rmtree(user_data_dir, ignore_errors=True)
-                    break 
-                
-                # --- 阶段 2: 答题流程 ---
-                # 登录成功，开始答题
-                # 注意：这里调用修改后的函数，它内部处理了提取链接重试(5次)和分数补考逻辑
-                exam_success, score = perform_exam_process(driver, max_retries=3)
-                
-                if exam_success and score is not None:
-                    result['score'] = score
-                    result['highest_score'] = score
-                    if score >= 60:
-                        log(f"🎉 答题通过! 分数: {score}")
-                        result['success'] = True
-                        result['status'] = '答题成功'
-                    else:
-                        log(f"😢 分数未达标: {score}")
-                        result['status'] = '分数不达标'
-                        result['failure_reason'] = f"得分{score}分"
-                else:
-                    result['status'] = '答题失败'
-                    result['failure_reason'] = '答题流程失败'
-                
-                # 任务完成（无论分数是否达标），退出函数
-                driver.quit()
-                shutil.rmtree(user_data_dir, ignore_errors=True)
-                return result
-
-            except Exception as e:
-                log(f"❌ 账号处理异常: {e}")
-                if driver: 
-                    try: driver.quit()
-                    except: pass
-                if os.path.exists(user_data_dir):
-                    try: shutil.rmtree(user_data_dir, ignore_errors=True)
-                    except: pass
-                # 发生未捕获异常，视为非密码错误，跳出内层循环进行全流程重试
-                break
+        # --- 阶段 1: 登录流程 ---
+        # 如果登录失败，这里内部有重试。如果彻底失败，返回状态
+        login_status = perform_login_flow(driver, username, password, max_retries=3)
         
-        # 检查是否因为所有密码都试完了才退出内层循环
-        if current_pwd_idx >= len(all_passwords):
-            log("❌ 所有候选密码均提示错误，放弃该账号")
-            result['status'] = '所有密码错误'
-            result['failure_reason'] = '所有候选密码均验证失败'
+        if login_status == 'password_error':
+            result['status'] = '密码错误'
+            result['failure_reason'] = '账号或密码不正确'
             return result
         
-        # 如果还在外层循环中，说明是触发了全流程重试
-        if session_attempt < max_session_retries - 1:
-            log(f"⏳ 等待5秒后进行第 {session_attempt + 2} 次全流程重试 (从密码 {current_pwd_idx + 1} 继续)...")
-            time.sleep(5)
+        if login_status != 'success':
+            result['status'] = '登录失败'
+            result['failure_reason'] = '登录流程失败'
+            return result
+        
+        # --- 阶段 2: 答题流程 ---
+        # 答题流程内部处理了重试逻辑：
+        # 1. 提取链接重试 5 次
+        # 2. 如果不及格，会利用 max_retries 进行补考
+        exam_success, score = perform_exam_process(driver, max_retries=3)
+        
+        if exam_success and score is not None:
+            result['score'] = score
+            result['highest_score'] = score
+            if score >= 60:
+                log(f"🎉 答题通过! 分数: {score}")
+                result['success'] = True
+                result['status'] = '答题成功'
+            else:
+                log(f"😢 分数未达标: {score}")
+                result['status'] = '分数不达标'
+                result['failure_reason'] = f"得分{score}分"
+        else:
+            result['status'] = '答题失败'
+            result['failure_reason'] = '答题流程失败'
+        
+    except Exception as e:
+        log(f"❌ 账号处理异常: {e}")
+        result['status'] = '异常'
+        result['failure_reason'] = str(e)
+    finally:
+        if driver:
+            try:
+                driver.quit()
+                log(f"🔒 浏览器已关闭")
+            except:
+                pass
+        
+        # 清理临时目录
+        if os.path.exists(user_data_dir):
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            except:
+                pass
     
-    # 外层循环结束，说明多次重试均失败（非密码错误）
-    result['status'] = '流程异常'
-    result['failure_reason'] = '多次尝试登录或答题均失败(非密码错误)'
     return result
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("用法: python jlc.py 账号1,账号2... 密码1,密码2... [失败退出标志]")
+    if len(sys.argv) < 2:
+        print("用法: python exam.py [失败退出标志] [账号组编号]")
+        print("失败退出标志: 不传或任意值-关闭, true-开启(任意账号签到失败时返回非零退出码)")
+        print("账号组编号: 只能输入数字，输入其他值则忽略")
         sys.exit(1)
-    usernames = sys.argv[1].split(',')
-    passwords = sys.argv[2].split(',')
-    fail_exit = len(sys.argv) >= 4 and sys.argv[3].lower() == 'true'
+
+    # usernames = sys.argv[1].split(',')
+    # passwords = sys.argv[2].split(',')
+    fail_exit = (sys.argv[1].lower() == 'true')
+    log(f"失败退出功能: {'开启' if enable_failure_exit else '关闭'}")
+
+    account_group = int(sys.argv[2]) if sys.argv[2].isdigit() else None
+
+    rawAccounts = os.getenv('JLC_ACCOUNT', '')
+    accounts = []
     
+    # 清洗数据
+    for line in rawAccounts.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#') or ':' not in line:
+            continue
+        try:
+            parts = line.split(':', 1)
+            username = parts[0].strip()
+            password = parts[1].strip()
+            if username and password:
+                accounts.append((username, password))
+        except:
+            continue
+
+    batch = accounts[(account_group-1)*50 : account_group*50]
+    argv1 = ",".join([x[0] for x in batch])
+    argv2 = ",".join([x[1] for x in batch])
+
+    usernames = [u.strip() for u in argv1.split(',') if u.strip()]
+    passwords = [p.strip() for p in argv2.split(',') if p.strip()]
+
     if len(usernames) != len(passwords): 
         log("❌ 账号密码数量不匹配")
         sys.exit(1)
     
-    # 输出初始信息
     log(f"检测到有 {len(usernames)} 个账号需要答题，失败退出功能已{'开启' if fail_exit else '未开启'}", show_time=False)
     
     # 存储账号信息以便重试
@@ -806,7 +802,7 @@ def main():
 
     # 第一轮运行
     for i, acc in enumerate(accounts_list):
-        log(f"{'='*40}\n正在处理账号 {acc['index']}\n{'='*40}", show_time=False)
+        log(f"\n{'='*40}\n正在处理账号 {acc['index']}\n{'='*40}", show_time=False)
         res = process_single_account(acc['username'], acc['password'], acc['index'], len(usernames))
         acc['result'] = res
         if i < len(accounts_list) - 1: 
@@ -816,7 +812,7 @@ def main():
     failed_accounts = [acc for acc in accounts_list if not acc['result']['success']]
     
     if failed_accounts:
-        log("="*40, show_time=False)
+        log("\n" + "="*40, show_time=False)
         log(f"🔄 检测到 {len(failed_accounts)} 个账号失败，开始最终重试流程", show_time=False)
         log("="*40, show_time=False)
         
@@ -827,7 +823,7 @@ def main():
             original_result = acc['result']
             original_reason = original_result.get('failure_reason')
             
-            log(f"🔄 [账号 {idx}] 第一次最终重试 (原失败原因: {original_reason})", show_time=False)
+            log(f"\n🔄 [账号 {idx}] 第一次最终重试 (原失败原因: {original_reason})", show_time=False)
             
             # 第一次重试
             retry_res_1 = process_single_account(u, p, idx, len(usernames))
@@ -858,7 +854,7 @@ def main():
             if i < len(failed_accounts) - 1:
                 time.sleep(3)
         
-    log("="*40, show_time=False)
+    log("\n" + "="*40, show_time=False)
     log("📊 立创答题结果总结", show_time=False)
     log("="*40, show_time=False)
     
