@@ -424,49 +424,66 @@ def extract_secretkey(driver, max_retries=5):
                     }
                     return origSetRequestHeader.apply(this, arguments);
                 };
+                const origFetch = window.fetch;
+                window.fetch = function(resource, options) {
+                    if (options && options.headers) {
+                        const headers = options.headers;
+                        if (typeof headers === 'object') {
+                            if (headers instanceof Headers) {
+                                const sk = headers.get('secretkey') || headers.get('SecretKey');
+                                if (sk) window.__jlc_secretkey = sk;
+                            } else {
+                                for (const key in headers) {
+                                    if (key.toLowerCase() === 'secretkey') {
+                                        window.__jlc_secretkey = headers[key];
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return origFetch.apply(this, arguments);
+                };
                 """
             })
 
             driver.get_log('performance')
 
-            if attempt > 0:
-                try:
-                    driver.refresh()
-                except Exception:
-                    pass
+            try:
+                driver.refresh()
+                time.sleep(3)
+            except Exception:
+                pass
 
             extra_headers = {}
             log("🔄 正在拦截页面合法鉴权头...")
 
-            for sniff_loop in range(2):
-                start_wait = time.time()
-                found_key = False
+            start_wait = time.time()
+            found_key = False
 
-                while time.time() - start_wait < 10:
-                    logs = driver.get_log('performance')
-                    for entry in logs:
-                        try:
-                            msg = json.loads(entry['message'])['message']
-                            if msg['method'] == 'Network.requestWillBeSent':
-                                req = msg['params']['request']
-                                if 'jlc-bbs.com/api/' in req['url'] and req['method'].upper() != 'OPTIONS':
-                                    req_headers = {str(k).lower(): str(v) for k, v in req['headers'].items()}
-                                    if 'secretkey' in req_headers:
-                                        extra_headers['secretkey'] = req_headers['secretkey']
-                                        found_key = True
-                                        break
-                        except Exception:
-                            continue
-                    if found_key:
-                        break
-                    time.sleep(0.5)
-
-                if 'secretkey' in extra_headers:
+            while time.time() - start_wait < 15:
+                logs = driver.get_log('performance')
+                for entry in logs:
+                    try:
+                        msg = json.loads(entry['message'])['message']
+                        if msg['method'] == 'Network.requestWillBeSent':
+                            req = msg['params']['request']
+                            req_headers = {str(k).lower(): str(v) for k, v in req['headers'].items()}
+                            if 'secretkey' in req_headers:
+                                extra_headers['secretkey'] = req_headers['secretkey']
+                                found_key = True
+                                break
+                        elif msg['method'] == 'Network.requestWillBeSentExtraInfo':
+                            req_headers = {str(k).lower(): str(v) for k, v in msg['params'].get('headers', {}).items()}
+                            if 'secretkey' in req_headers:
+                                extra_headers['secretkey'] = req_headers['secretkey']
+                                found_key = True
+                                break
+                    except Exception:
+                        continue
+                if found_key:
                     break
-
-                if sniff_loop == 0:
-                    log("⚠ 嗅探未抓到鉴权头，触发页面刷新重试...")
-                    driver.refresh()
+                time.sleep(0.3)
 
             if 'secretkey' in extra_headers:
                 log(f"✅ 成功截获合法鉴权头(SecretKey): {extra_headers['secretkey'][:10]}...")
