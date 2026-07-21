@@ -411,44 +411,85 @@ def perform_login_flow(driver, username, password, max_retries=3):
 
 # ======================== BBS 功能函数 ========================
 def extract_secretkey(driver, max_retries=5):
-    """从浏览器性能日志中提取 secretkey"""
+    """从浏览器性能日志中提取 secretkey（增强版）"""
     for attempt in range(max_retries):
         try:
-            logs = driver.get_log("performance")
-            for entry in logs:
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': """
+                window.__jlc_secretkey = null;
+                const origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+                XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+                    if (name.toLowerCase() === 'secretkey') {
+                        window.__jlc_secretkey = value;
+                    }
+                    return origSetRequestHeader.apply(this, arguments);
+                };
+                """
+            })
+
+            driver.get_log('performance')
+
+            if attempt > 0:
                 try:
-                    log_entry = json.loads(entry['message'])
-                    message = log_entry.get('message', {})
-                    method = message.get('method', '')
-                    params = message.get('params', {})
-
-                    if method == 'Network.requestWillBeSent':
-                        headers = params.get('request', {}).get('headers', {})
-                        for key, value in headers.items():
-                            if key.lower() == 'secretkey' and value:
-                                log(f"✅ 成功提取 secretkey: {value[:20]}...")
-                                return value
-
-                    elif method == 'Network.requestWillBeSentExtraInfo':
-                        headers = params.get('headers', {})
-                        for key, value in headers.items():
-                            if key.lower() == 'secretkey' and value:
-                                log(f"✅ 成功提取 secretkey: {value[:20]}...")
-                                return value
-
+                    driver.refresh()
                 except Exception:
-                    continue
+                    pass
+
+            extra_headers = {}
+            log("🔄 正在拦截页面合法鉴权头...")
+
+            for sniff_loop in range(2):
+                start_wait = time.time()
+                found_key = False
+
+                while time.time() - start_wait < 10:
+                    logs = driver.get_log('performance')
+                    for entry in logs:
+                        try:
+                            msg = json.loads(entry['message'])['message']
+                            if msg['method'] == 'Network.requestWillBeSent':
+                                req = msg['params']['request']
+                                if 'jlc-bbs.com/api/' in req['url'] and req['method'].upper() != 'OPTIONS':
+                                    req_headers = {str(k).lower(): str(v) for k, v in req['headers'].items()}
+                                    if 'secretkey' in req_headers:
+                                        extra_headers['secretkey'] = req_headers['secretkey']
+                                        found_key = True
+                                        break
+                        except Exception:
+                            continue
+                    if found_key:
+                        break
+                    time.sleep(0.5)
+
+                if 'secretkey' in extra_headers:
+                    break
+
+                if sniff_loop == 0:
+                    log("⚠ 嗅探未抓到鉴权头，触发页面刷新重试...")
+                    driver.refresh()
+
+            if 'secretkey' in extra_headers:
+                log(f"✅ 成功截获合法鉴权头(SecretKey): {extra_headers['secretkey'][:10]}...")
+                return extra_headers['secretkey']
+            else:
+                log("⚠ 遍历了所有请求仍未截获鉴权头，启动 JS 缓存兜底方案...")
+                fallback_sk = driver.execute_script("""
+                    return window.__jlc_secretkey || 
+                           window.localStorage.getItem('secretkey') || 
+                           window.localStorage.getItem('secretKey') || 
+                           window.sessionStorage.getItem('secretkey') || 
+                           window.sessionStorage.getItem('secretKey');
+                """)
+                if fallback_sk:
+                    log(f"✅ 成功通过 JS 底层缓存兜底提取到 SecretKey: {fallback_sk[:10]}...")
+                    return fallback_sk
+
         except Exception as e:
             log(f"⚠ 提取 secretkey 异常: {e}")
 
         if attempt < max_retries - 1:
             log(f"⚠ 未提取到 secretkey，等待3秒后重试 ({attempt + 1}/{max_retries})...")
             time.sleep(3)
-            try:
-                driver.refresh()
-                time.sleep(5)
-            except Exception:
-                pass
     return None
 
 
