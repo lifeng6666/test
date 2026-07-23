@@ -1948,7 +1948,7 @@ def main():
         except:
             continue
 
-    batch = accounts[(account_group-1)*50 : account_group*50]
+    batch = accounts[(account_group-1)*40 : account_group*40]
     argv1 = ",".join([x[0] for x in batch])
     argv2 = ",".join([x[1] for x in batch])
 
