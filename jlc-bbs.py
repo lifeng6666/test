@@ -417,11 +417,11 @@ def clear_performance_logs(driver):
 
 def navigate_bbs_via_passport(driver):
 
-    passport_url = ("https://www.jlc-bbs.com/platform/points-paradise?type=index&id=ab69ff00332949328ba578c086d42141&from=2025l")
+    url = ("https://www.jlc-bbs.com/platform/points-paradise?type=index&id=ab69ff00332949328ba578c086d42141&from=2025l")
 
     log(f"🔗 打开BBS页面...")
     try:
-        driver.get(passport_url)
+        driver.get(url)
     except TimeoutException:
         log("⚠ 页面加载超时，停止加载继续...")
         try:
@@ -429,41 +429,11 @@ def navigate_bbs_via_passport(driver):
         except:
             pass
 
-    log("🔍 等待BBS页面...")
+    log("🔍 等待BBS页面资源加载 (10s)...")
     try:
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     except:
         pass
-    time.sleep(5)
-
-    start_time = time.time()
-    max_wait = 60
-
-    while time.time() - start_time < max_wait:
-        current_url = driver.current_url
-
-        if is_on_zh_site(current_url):
-            log(f"✅ 已到达目标页面: {current_url.split('?')[0]}")
-            break
-
-        time.sleep(1)
-
-    final_url = driver.current_url
-    if is_on_zh_site(final_url):
-        log(f"✅ 成功到达领券页面: {final_url.split('?')[0]}")
-    else:
-        log(f"⚠ 未能到达领券页面，当前URL: {final_url.split('?')[0]}")
-        log("⚠ 尝试直接打开目标页面...")
-        target_url = "https://www.jlc-bbs.com/platform/points-paradise?type=index&id=ab69ff00332949328ba578c086d42141&from=2025l"
-        try:
-            driver.get(target_url)
-        except TimeoutException:
-            try:
-                driver.execute_script("window.stop();")
-            except:
-                pass
-
-    log("⏳ 等待页面资源加载 (10s)...")
     time.sleep(10)
 
 # ======================== BBS 功能函数 ========================
