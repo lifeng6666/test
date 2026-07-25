@@ -408,105 +408,91 @@ def perform_login_flow(driver, username, password, max_retries=3):
                 return "login_failed"
     return "login_failed"
 
+def clear_performance_logs(driver):
+    """清空已有的性能日志"""
+    try:
+        driver.get_log('performance')
+    except:
+        pass
 
-# ======================== BBS 功能函数 ========================
-def extract_secretkey(driver, max_retries=5):
-    """从浏览器性能日志中提取 secretkey（增强版）"""
-    for attempt in range(max_retries):
+def navigate_bbs_via_passport(driver):
+
+    passport_url = ("https://www.jlc-bbs.com/platform/points-paradise?type=index&id=ab69ff00332949328ba578c086d42141&from=2025l")
+
+    log(f"🔗 打开BBS页面...")
+    try:
+        driver.get(passport_url)
+    except TimeoutException:
+        log("⚠ 页面加载超时，停止加载继续...")
         try:
-            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': """
-                window.__jlc_secretkey = null;
-                const origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
-                XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-                    if (name.toLowerCase() === 'secretkey') {
-                        window.__jlc_secretkey = value;
-                    }
-                    return origSetRequestHeader.apply(this, arguments);
-                };
-                const origFetch = window.fetch;
-                window.fetch = function(resource, options) {
-                    if (options && options.headers) {
-                        const headers = options.headers;
-                        if (typeof headers === 'object') {
-                            if (headers instanceof Headers) {
-                                const sk = headers.get('secretkey') || headers.get('SecretKey');
-                                if (sk) window.__jlc_secretkey = sk;
-                            } else {
-                                for (const key in headers) {
-                                    if (key.toLowerCase() === 'secretkey') {
-                                        window.__jlc_secretkey = headers[key];
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return origFetch.apply(this, arguments);
-                };
-                """
-            })
+            driver.execute_script("window.stop();")
+        except:
+            pass
 
-            driver.get_log('performance')
+    log("🔍 等待BBS页面...")
+    try:
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    except:
+        pass
+    time.sleep(5)
 
+    start_time = time.time()
+    max_wait = 60
+
+    while time.time() - start_time < max_wait:
+        current_url = driver.current_url
+
+        if is_on_zh_site(current_url):
+            log(f"✅ 已到达目标页面: {current_url.split('?')[0]}")
+            break
+
+        time.sleep(1)
+
+    final_url = driver.current_url
+    if is_on_zh_site(final_url):
+        log(f"✅ 成功到达领券页面: {final_url.split('?')[0]}")
+    else:
+        log(f"⚠ 未能到达领券页面，当前URL: {final_url.split('?')[0]}")
+        log("⚠ 尝试直接打开目标页面...")
+        target_url = "https://www.jlc-bbs.com/platform/points-paradise?type=index&id=ab69ff00332949328ba578c086d42141&from=2025l"
+        try:
+            driver.get(target_url)
+        except TimeoutException:
             try:
-                driver.refresh()
-                time.sleep(3)
-            except Exception:
+                driver.execute_script("window.stop();")
+            except:
                 pass
 
-            extra_headers = {}
-            log("🔄 正在拦截页面合法鉴权头...")
+    log("⏳ 等待页面资源加载 (10s)...")
+    time.sleep(10)
 
-            start_wait = time.time()
-            found_key = False
+# ======================== BBS 功能函数 ========================
+def extract_secretkey(driver):
+    """从浏览器性能日志中提取 secretkey（增强版）"""
+    try:
+        logs = driver.get_log('performance')
+        for entry in logs:
+            try:
+                log_entry = json.loads(entry['message'])
+                message = log_entry.get('message', {})
+                method = message.get('method', '')
+                params = message.get('params', {})
 
-            while time.time() - start_wait < 15:
-                logs = driver.get_log('performance')
-                for entry in logs:
-                    try:
-                        msg = json.loads(entry['message'])['message']
-                        if msg['method'] == 'Network.requestWillBeSent':
-                            req = msg['params']['request']
-                            req_headers = {str(k).lower(): str(v) for k, v in req['headers'].items()}
-                            if 'secretkey' in req_headers:
-                                extra_headers['secretkey'] = req_headers['secretkey']
-                                found_key = True
-                                break
-                        elif msg['method'] == 'Network.requestWillBeSentExtraInfo':
-                            req_headers = {str(k).lower(): str(v) for k, v in msg['params'].get('headers', {}).items()}
-                            if 'secretkey' in req_headers:
-                                extra_headers['secretkey'] = req_headers['secretkey']
-                                found_key = True
-                                break
-                    except Exception:
-                        continue
-                if found_key:
-                    break
-                time.sleep(0.3)
+                if method == 'Network.requestWillBeSent':
+                    headers = params.get('request', {}).get('headers', {})
+                    for key, value in headers.items():
+                        if key.lower() == 'secretkey' and value:
+                            return value
 
-            if 'secretkey' in extra_headers:
-                log(f"✅ 成功截获合法鉴权头(SecretKey): {extra_headers['secretkey'][:10]}...")
-                return extra_headers['secretkey']
-            else:
-                log("⚠ 遍历了所有请求仍未截获鉴权头，启动 JS 缓存兜底方案...")
-                fallback_sk = driver.execute_script("""
-                    return window.__jlc_secretkey || 
-                           window.localStorage.getItem('secretkey') || 
-                           window.localStorage.getItem('secretKey') || 
-                           window.sessionStorage.getItem('secretkey') || 
-                           window.sessionStorage.getItem('secretKey');
-                """)
-                if fallback_sk:
-                    log(f"✅ 成功通过 JS 底层缓存兜底提取到 SecretKey: {fallback_sk[:10]}...")
-                    return fallback_sk
-
-        except Exception as e:
-            log(f"⚠ 提取 secretkey 异常: {e}")
-
-        if attempt < max_retries - 1:
-            log(f"⚠ 未提取到 secretkey，等待3秒后重试 ({attempt + 1}/{max_retries})...")
-            time.sleep(3)
+                elif method == 'Network.requestWillBeSentExtraInfo':
+                    headers = params.get('headers', {})
+                    for key, value in headers.items():
+                        if key.lower() == 'secretkey' and value:
+                            return value
+            except:
+                continue
+    except Exception as e:
+        log(f"⚠ 读取性能日志异常: {e}")
     return None
 
 
@@ -616,6 +602,8 @@ def validate_and_fix_bbs_session(driver, secretkey, target_url, max_fix_attempts
                 driver.execute_script("window.stop();")
             time.sleep(10)
 
+            clear_performance_logs(driver)
+            navigate_bbs_via_passport(driver)
             new_sk = extract_secretkey(driver)
             if not new_sk:
                 log(f"⚠ 重建会话时未能提取 secretkey")
@@ -940,6 +928,8 @@ def process_single_account(username, password, account_index, total_accounts):
         log("⏳ 等待10秒让页面完全加载...")
         time.sleep(10)
 
+        clear_performance_logs(driver)
+        navigate_bbs_via_passport(driver)
         secretkey = extract_secretkey(driver)
         if not secretkey:
             log("❌ 无法提取 secretkey，此账号流程异常")
@@ -990,7 +980,7 @@ def process_single_account(username, password, account_index, total_accounts):
         try:
             driver.get(
                 "https://www.jlc-bbs.com/platform/points-paradise"
-                "?type=index&id=ab69ff00332949328ba578c086d42141"
+                "?type=index&id=ab69ff00332949328ba578c086d42141&from=2025l"
             )
         except TimeoutException:
             log("⚠ 抽奖页面加载超时，停止加载继续...")
@@ -999,6 +989,8 @@ def process_single_account(username, password, account_index, total_accounts):
         log("⏳ 等待10秒让页面完全加载...")
         time.sleep(10)
 
+        clear_performance_logs(driver)
+        navigate_bbs_via_passport(driver)
         new_sk = extract_secretkey(driver)
         if new_sk:
             secretkey = new_sk
