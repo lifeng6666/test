@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import subprocess
 import time
 import sys
@@ -108,6 +109,18 @@ class AliV3:
 
     def _setup_browser(self):
         """配置并启动 DrissionPage"""
+        # 启动前先清理残留 Chrome 进程
+        try:
+            current_platform = platform.system()
+            if current_platform == 'Linux':
+                os.system("pkill -9 -f 'chrome.*headless' 2>/dev/null")
+                os.system("pkill -9 -f 'chromium.*headless' 2>/dev/null")
+            elif current_platform == 'Windows':
+                os.system("taskkill /F /IM chrome.exe /T 2>nul")
+            time.sleep(1.5)
+        except Exception:
+            pass
+
         co = ChromiumOptions()
         co.set_argument('--headless=new')  # 无头模式
         co.set_argument('--no-sandbox')
@@ -144,7 +157,7 @@ class AliV3:
         co.set_argument('--memory-pressure-off')
         co.set_argument('--js-flags=--max-old-space-size=512')
         
-        co.set_timeouts(base=60, page_load=60, script=60)
+        co.set_timeouts(base=30, page_load=30, script=30)
         
         # 随机 User-Agent
         ua_list = [
@@ -156,7 +169,7 @@ class AliV3:
         co.set_user_agent(random.choice(ua_list))
 
         page = ChromiumPage(addr_or_opts=co)
-        page.set.timeouts(base=60, page_load=60, script=60)
+        page.set.timeouts(base=30, page_load=30, script=30)
         
         return page
 
