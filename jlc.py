@@ -61,9 +61,6 @@ skip_oshwhub_signin = False
 consecutive_jindou_fails = 0
 skip_jindou_signin = False
 
-consecutive_login_timeouts = 0
-skip_login_for_all = False
-
 consecutive_proxy_fails = 0
 disable_global_proxy = False
 
@@ -900,21 +897,6 @@ def run_aliv3_task(username, password, output_file):
             except Exception as e:
                 print(f"Error executing AliV3 in process: {e}")
 
-def _cleanup_chrome_processes():
-    """清理残留的 Chrome 进程，防止僵尸进程影响后续运行"""
-    try:
-        current_platform = platform.system()
-        if current_platform == 'Linux':
-            # 强制清理所有残留的 Chrome 进程（CI 环境专用）
-            os.system("pkill -9 -f 'chrome.*headless' 2>/dev/null")
-            os.system("pkill -9 -f 'chromium.*headless' 2>/dev/null")
-        elif current_platform == 'Windows':
-            os.system("taskkill /F /IM chrome.exe /T 2>nul")
-    except Exception:
-        pass
-    # 给 Chrome 进程清理一点时间
-    time.sleep(1)
-
 def get_ali_auth_code(username, password, account_index=0):
     """
     调用 AliV3 获取 authCode，超时控制 (180s)
@@ -940,15 +922,7 @@ def get_ali_auth_code(username, password, account_index=0):
         if p.is_alive():
             log(f"账号 {account_index} - ❌ 登录超时 (超过180秒)，正在强制终止 登录脚本...")
             p.terminate()
-            p.join(timeout=5)  # 给子进程5秒清理
-            
-            # 如果进程仍然存活，强制杀死
-            if p.is_alive():
-                p.kill()
-                p.join()
-            
-            # 清理残留的 Chrome 僵尸进程
-            _cleanup_chrome_processes()
+            p.join() # 确保进程已退出
             
             # 读取已生成的日志以便调试
             try:
@@ -1092,9 +1066,8 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
 
         # 调用get_ali_auth_code，支持超时，增加重试机制
         auth_code = None
-        max_auth_retries = 6
+        max_auth_retries = 18
         auth_result = None
-        consecutive_timeouts = 0  # 连续超时计数
         
         for auth_attempt in range(max_auth_retries):
             # 调用get_ali_auth_code，支持超时
@@ -1102,17 +1075,8 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             
             # get_ali_auth_code 返回 None 表示超时
             if auth_result is None:
-                consecutive_timeouts += 1
-                log(f"账号 {account_index} - ⏳ 登录脚本超时 ({consecutive_timeouts}/{max_auth_retries})")
-                
-                # 连续3次超时，说明浏览器环境有问题，提前终止
-                if consecutive_timeouts >= 3:
-                    log(f"账号 {account_index} - ❌ 连续 {consecutive_timeouts} 次登录超时，浏览器环境异常，终止重试")
-                    result['oshwhub_status'] = '连续登录超时'
-                    result['critical_error'] = True
-                    return result
+                pass # 超时情况，继续重试
             elif isinstance(auth_result, str) and len(auth_result) > 100:
-                consecutive_timeouts = 0  # 重置连续超时计数
                 # 说明返回的是日志内容，未提取到 authCode
                 ali_output = auth_result
                 
@@ -1135,15 +1099,13 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                     # 密码错误是致命错误，不需要重试，直接跳出循环处理
                     break
             else:
-                consecutive_timeouts = 0  # 重置连续超时计数
                 # 成功获取 authCode
                 auth_code = auth_result
                 break
             
             if auth_attempt < max_auth_retries - 1:
-                wait_time = 3 + auth_attempt  # 递增等待时间
-                log(f"账号 {account_index} - ⚠ 未获取到AuthCode，等待{wait_time}秒后第 {auth_attempt + 2} 次重试...")
-                time.sleep(wait_time)
+                log(f"账号 {account_index} - ⚠ 未获取到AuthCode，等待5秒后第 {auth_attempt + 2} 次重试...")
+                time.sleep(5)
 
         # 判断登录结果
         if auth_code:
@@ -1168,7 +1130,6 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
              # 分析失败原因
              if auth_result is None:
                  result['oshwhub_status'] = '登录超时'
-                 result['critical_error'] = True  # 所有重试均超时，标记为严重错误
                  return result
              
              if isinstance(auth_result, str):
@@ -1317,29 +1278,21 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             
             auth_result_jlc = None
             auth_code_jlc = None
-            jlc_consecutive_timeouts = 0
             
             for auth_attempt in range(max_auth_retries):
                 auth_result_jlc = get_ali_auth_code(username, password, account_index)
                 
                 if auth_result_jlc is None:
-                    jlc_consecutive_timeouts += 1
-                    if jlc_consecutive_timeouts >= 3:
-                        log(f"账号 {account_index} - ❌ JLC登录连续 {jlc_consecutive_timeouts} 次超时，终止重试")
-                        result['jindou_status'] = 'JLC登录连续超时'
-                        result['critical_error'] = True
-                        break
+                    pass 
                 elif isinstance(auth_result_jlc, str) and len(auth_result_jlc) > 100:
-                    jlc_consecutive_timeouts = 0
+                    pass # 未获取到有效code
                 else:
-                    jlc_consecutive_timeouts = 0
                     auth_code_jlc = auth_result_jlc
                     break
                 
                 if auth_attempt < max_auth_retries - 1:
-                    wait_time = 3 + auth_attempt
-                    log(f"账号 {account_index} - ⚠ JLC登录凭证获取失败，等待{wait_time}秒后第 {auth_attempt + 2} 次重试...")
-                    time.sleep(wait_time)
+                    log(f"账号 {account_index} - ⚠ JLC登录凭证获取失败，等待5秒后第 {auth_attempt + 2} 次重试...")
+                    time.sleep(5)
             
             if auth_code_jlc is None:
                  log(f"账号 {account_index} - ❌ 连续 {max_auth_retries} 次无法获取 m.jlc.com 登录凭证")
@@ -1654,38 +1607,6 @@ def should_retry(merged_success, password_error):
 
 def process_single_account(username, password, account_index, total_accounts):
     """处理单个账号，包含重试机制，并合并多次尝试的最佳结果"""
-    global consecutive_login_timeouts, skip_login_for_all
-    
-    # 如果全局登录已跳过，直接返回失败
-    if skip_login_for_all:
-        log(f"账号 {account_index} - ⚠ 浏览器环境异常，跳过登录流程")
-        return {
-            'account_index': account_index,
-            'nickname': '未知',
-            'oshwhub_status': '全局跳过-登录超时',
-            'oshwhub_success': False,
-            'initial_points': 0,
-            'final_points': 0,
-            'points_reward': 0,
-            'reward_results': [],
-            'jindou_status': '全局跳过',
-            'jindou_success': False,
-            'initial_jindou': 0,
-            'final_jindou': 0,
-            'jindou_reward': 0,
-            'has_weekly_reward': False,
-            'has_special_reward': False,
-            'token_extracted': False,
-            'secretkey_extracted': False,
-            'retry_count': 0,
-            'password_error': False,
-            'critical_error': True,
-            'login_success': False,
-            'jlc_login_success': False,
-            'rule_violation': False,
-            'unclaimed_reward': False
-        }
-    
     max_retries = 3  # 最多重试3次
     merged_result = {
         'account_index': account_index,
@@ -1824,15 +1745,6 @@ def process_single_account(username, password, account_index, total_accounts):
                 log("⚠ 连续3个账号金豆签到失败，接下来的账号跳过金豆签到流程！")
         else:
             consecutive_jindou_fails = 0
-
-    # 检查登录连续超时 (浏览器环境异常)
-    if merged_result.get('oshwhub_status') in ('登录超时', '连续登录超时'):
-        consecutive_login_timeouts += 1
-        if consecutive_login_timeouts >= 3:
-            skip_login_for_all = True
-            log("⚠ 连续3个账号登录超时，浏览器环境异常，后续账号跳过登录流程！")
-    elif merged_result.get('oshwhub_status') not in ('全局跳过-登录超时',):
-        consecutive_login_timeouts = 0
     # ------------------------------------------------
 
     return merged_result
