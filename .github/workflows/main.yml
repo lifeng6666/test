@@ -79,7 +79,7 @@ jobs:
     env:
       JLC_ACCOUNT: ${{ secrets.JLC_ACCOUNT }}
     strategy:
-      max-parallel: 20
+      max-parallel: 2
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
