@@ -1,6 +1,5 @@
 import json
 import os
-import platform
 import subprocess
 import time
 import sys
