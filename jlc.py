@@ -130,6 +130,33 @@ def with_retry(func, max_retries=5, delay=1):
         return None
     return wrapper
 
+def fetch_via_browser(driver, url, timeout=20):
+    """通过浏览器上下文执行 fetch，复用浏览器已建立的会话与完整请求指纹，
+    绕过 CloudWAF 对 Python requests 的拦截。
+    返回 (status_code, text)。失败时抛出异常。
+    """
+    try:
+        driver.set_script_timeout(timeout)
+    except Exception:
+        pass
+    js = """
+    var callback = arguments[arguments.length - 1];
+    fetch(arguments[0], { credentials: 'include' })
+        .then(function(resp) {
+            var status = resp.status;
+            return resp.text().then(function(text) {
+                callback({ ok: true, status: status, text: text });
+            });
+        })
+        .catch(function(err) {
+            callback({ ok: false, error: String(err) });
+        });
+    """
+    result = driver.execute_async_script(js, url)
+    if not result or not result.get('ok'):
+        raise RuntimeError(f"浏览器 fetch 失败: {(result or {}).get('error', '未知错误')}")
+    return result.get('status'), result.get('text')
+
 @with_retry
 def extract_token_from_local_storage(driver):
     """从 localStorage 提取 X-JLC-AccessToken"""
@@ -228,25 +255,16 @@ def get_oshwhub_points(driver, account_index):
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            # 获取当前页面的Cookie
-            cookies = driver.get_cookies()
-            cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-            
-            headers = {
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'accept': 'application/json, text/plain, */*',
-                'cookie': cookie_str
-            }
-            
-            # 调用用户信息API获取积分
+            # 通过浏览器 fetch 调用 API，避免被 CloudWAF 拦截 (418)
             timestamp = int(time.time() * 1000)
-            response = requests.get(f"https://oshwhub.com/api/users/getSignInProfile?_t={timestamp}", headers=headers, timeout=10)
-            if response.status_code == 200:
+            url = f"https://oshwhub.com/api/users/getSignInProfile?_t={timestamp}"
+            status_code, text = fetch_via_browser(driver, url)
+            if status_code == 200:
                 try:
-                    data = response.json()
+                    data = json.loads(text)
                 except ValueError:
                     if attempt == max_retries - 1:
-                        log(f"账号 {account_index} - ⚠ 获取开源平台积分接口返回非JSON数据: {response.text}")
+                        log(f"账号 {account_index} - ⚠ 获取开源平台积分接口返回非JSON数据: {text}")
                     raise ValueError("Invalid JSON")
 
                 if data and data.get('success'):
@@ -257,7 +275,7 @@ def get_oshwhub_points(driver, account_index):
                         log(f"账号 {account_index} - ⚠ 获取开源平台积分未返回success，接口原始返回: {json.dumps(data, ensure_ascii=False)}")
             else:
                 if attempt == max_retries - 1:
-                    log(f"账号 {account_index} - ⚠ 获取开源平台积分状态码异常: {response.status_code}，接口原始返回: {response.text}")
+                    log(f"账号 {account_index} - ⚠ 获取开源平台积分状态码异常: {status_code}，接口原始返回: {text}")
         except Exception as e:
             if attempt == max_retries - 1:
                 log(f"账号 {account_index} - ⚠ 获取开源平台积分请求异常: {e}")
@@ -843,23 +861,13 @@ def click_gift_buttons(driver, account_index):
 def get_user_nickname_from_api(driver, account_index):
     """通过API获取用户昵称"""
     try:
-        # 获取当前页面的Cookie
-        cookies = driver.get_cookies()
-        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-        
-        headers = {
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'accept': 'application/json, text/plain, */*',
-            'cookie': cookie_str
-        }
-        
-        # 调用用户信息API
-        response = requests.get("https://oshwhub.com/api/users", headers=headers, timeout=10)
-        if response.status_code == 200:
+        # 通过浏览器 fetch 调用 API，避免被 CloudWAF 拦截 (418)
+        status_code, text = fetch_via_browser(driver, "https://oshwhub.com/api/users")
+        if status_code == 200:
             try:
-                data = response.json()
+                data = json.loads(text)
             except ValueError:
-                log(f"账号 {account_index} - ⚠ 用户信息API返回非JSON数据，原始返回: {response.text}")
+                log(f"账号 {account_index} - ⚠ 用户信息API返回非JSON数据，原始返回: {text}")
                 return None
 
             if data and data.get('success'):
@@ -872,7 +880,7 @@ def get_user_nickname_from_api(driver, account_index):
             log(f"账号 {account_index} - ⚠ 用户信息API未返回success，接口原始返回: {json.dumps(data, ensure_ascii=False)}")
             return None
         else:
-            log(f"账号 {account_index} - ⚠ 用户信息API状态码异常: {response.status_code}，接口原始返回: {response.text}")
+            log(f"账号 {account_index} - ⚠ 用户信息API状态码异常: {status_code}，接口原始返回: {text}")
             return None
     except Exception as e:
         log(f"账号 {account_index} - ⚠ 获取用户昵称失败: {e}")
